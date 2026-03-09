@@ -1,5 +1,10 @@
+def get_greeting():
+    """Return a greeting message."""
+    return "Hello, World!"
+
+
 def main():
-    print("Hello, World!")
+    print(get_greeting())
 
 
 if __name__ == "__main__":
