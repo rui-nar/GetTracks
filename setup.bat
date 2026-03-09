@@ -1,49 +1,56 @@
 @echo off
 REM GetTracks Setup Script
-REM Creates virtual environment and installs dependencies
+REM This script sets up the virtual environment and installs dependencies
 
-echo Setting up GetTracks development environment...
+echo.
+echo ========================================
+echo GetTracks - Setup Script
+echo ========================================
+echo.
 
-REM Check if Python is available
+REM Check if Python is installed
 python --version >nul 2>&1
-if errorlevel 1 (
+if %errorlevel% neq 0 (
     echo Error: Python is not installed or not in PATH
-    echo Please install Python 3.8+ from https://python.org
+    echo Please install Python 3.9+ from https://www.python.org/
     pause
     exit /b 1
 )
 
-echo Python found. Creating virtual environment...
-
-REM Create virtual environment
-python -m venv .venv
-if errorlevel 1 (
-    echo Error: Failed to create virtual environment
-    pause
-    exit /b 1
+REM Check if virtual environment already exists
+if exist ".venv" (
+    echo Virtual environment already exists.
+    echo Skipping venv creation.
+) else (
+    echo Creating virtual environment...
+    python -m venv .venv
+    if %errorlevel% neq 0 (
+        echo Error: Failed to create virtual environment
+        pause
+        exit /b 1
+    )
+    echo ✓ Virtual environment created
 )
 
-echo Virtual environment created. Installing dependencies...
-
-REM Install dependencies using venv Python
-.venv\Scripts\python.exe -m pip install --upgrade pip
-if errorlevel 1 (
-    echo Warning: Failed to upgrade pip, continuing...
-)
-
+echo.
+echo Installing dependencies...
+.venv\Scripts\python.exe -m pip install --upgrade pip >nul
 .venv\Scripts\python.exe -m pip install -r requirements.txt
-if errorlevel 1 (
+
+if %errorlevel% neq 0 (
     echo Error: Failed to install dependencies
     pause
     exit /b 1
 )
 
 echo.
-echo Setup complete! You can now:
-echo - Run 'launch.bat' to start the application
-echo - Or run '.venv\Scripts\python.exe -m pytest' to run tests
+echo ========================================
+echo ✓ Setup Complete!
+echo ========================================
 echo.
-echo Remember to configure your Strava credentials in config.json
+echo You can now launch GetTracks by running:
+echo   launch.bat
+echo or
+echo   .venv\Scripts\python.exe main.py
 echo.
-
 pause

@@ -34,7 +34,26 @@ class Config:
         Raises:
             ConfigurationError: If config file is invalid
         """
-        self.config_file = Path(config_file) if config_file else Path("config.json")
+        if config_file:
+            self.config_file = Path(config_file)
+        else:
+            # Try multiple common locations
+            possible_paths = [
+                Path("config/config.json"),  # config/ subdirectory
+                Path("config.json"),           # current directory
+                Path(".") / "config" / "config.json",  # relative to project
+            ]
+            
+            self.config_file = None
+            for path in possible_paths:
+                if path.exists():
+                    self.config_file = path
+                    break
+            
+            # Default to config/config.json if none found
+            if self.config_file is None:
+                self.config_file = Path("config/config.json")
+        
         self._config: Dict[str, Any] = {}
         self.load()
 
