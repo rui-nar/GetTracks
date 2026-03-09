@@ -1,6 +1,7 @@
 """GUI components for GetTracks."""
 
 import sys
+import os
 from typing import Optional, List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -211,6 +212,20 @@ class MainWindow(QMainWindow):
         """Set up the main UI."""
         self.setWindowTitle("GetTracks - Strava Activity Merger")
         self.setMinimumSize(1000, 700)
+        
+        # Load and set application icon
+        icon_paths = [
+            "assets/app_icon.png",
+            "../assets/app_icon.png",
+            os.path.join(os.path.dirname(__file__), "..", "..", "assets", "app_icon.png")
+        ]
+        
+        for icon_path in icon_paths:
+            if os.path.exists(icon_path):
+                icon = QIcon(icon_path)
+                if not icon.isNull():
+                    self.setWindowIcon(icon)
+                    break
 
         # Create central widget
         central_widget = QWidget()
@@ -404,6 +419,20 @@ class MainWindow(QMainWindow):
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
+    
+    # Load and set application icon
+    icon_paths = [
+        "assets/app_icon.png",
+        "./assets/app_icon.png",
+        os.path.join(os.path.dirname(__file__), "..", "..", "assets", "app_icon.png")
+    ]
+    
+    for icon_path in icon_paths:
+        if os.path.exists(icon_path):
+            app_icon = QIcon(icon_path)
+            if not app_icon.isNull():
+                app.setWindowIcon(app_icon)
+                break
 
     # Load configuration
     config = Config()
