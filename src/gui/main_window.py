@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QTextEdit, QSplitter, QFrame
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
 
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI
@@ -268,10 +268,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         left_layout.addWidget(self.progress_bar)
 
-        # Status label
-        self.status_label = QLabel("Ready")
-        left_layout.addWidget(self.status_label)
-
         # Activity list
         self.activity_list = ActivityListWidget()
         left_layout.addWidget(self.activity_list)
@@ -284,6 +280,13 @@ class MainWindow(QMainWindow):
 
         # Set splitter proportions
         splitter.setSizes([400, 600])
+        
+        # Status bar with icon
+        self.status_bar = self.statusBar()
+        self.status_icon = QLabel()
+        self.status_text = QLabel("Ready")
+        self.status_bar.addWidget(self.status_icon, 0)
+        self.status_bar.addWidget(self.status_text, 1)
 
     def connect_signals(self):
         """Connect UI signals to handlers."""
@@ -301,7 +304,7 @@ class MainWindow(QMainWindow):
         self.auth_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.status_label.setText("Authenticating with Strava...")
+        self.update_status("Authenticating with Strava...", "working")
 
         # Start authentication worker thread
         self.auth_worker = OAuthAuthenticationWorker(self.api_client)
@@ -318,7 +321,7 @@ class MainWindow(QMainWindow):
         self.auth_button.setEnabled(True)
         self.auth_button.setText("✓ Authenticated")
         self.progress_bar.setVisible(False)
-        self.status_label.setText("Successfully authenticated! Click 'Fetch Activities' to load your activities.")
+        self.update_status("Successfully authenticated! Click 'Fetch Activities' to load your activities.", "success")
 
         # Show success message
         QMessageBox.information(
@@ -335,7 +338,7 @@ class MainWindow(QMainWindow):
         # Update UI
         self.auth_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.status_label.setText("Authentication failed")
+        self.update_status("Authentication failed", "error")
 
         # Show error dialog
         QMessageBox.critical(
@@ -353,7 +356,7 @@ class MainWindow(QMainWindow):
         self.fetch_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.status_label.setText("Fetching activities...")
+        self.update_status("Fetching activities...", "working")
 
         # Start worker thread
         self.worker = FetchActivitiesWorker(self.api_client)
@@ -364,7 +367,58 @@ class MainWindow(QMainWindow):
 
     def update_progress(self, message: str):
         """Update progress display."""
-        self.status_label.setText(message)
+        self.status_text.setText(message)
+
+    def update_status(self, message: str, status_type: str = "info"):
+        """Update status bar with message and icon.
+        
+        Args:
+            message: Status message to display
+            status_type: Type of status - 'ready', 'working', 'success', 'error', 'info'
+        """
+        self.status_text.setText(message)
+        
+        # Create status icons
+        if status_type == "ready":
+            # Green circle for ready
+            pixmap = self._create_colored_pixmap("#4CAF50", 16)
+        elif status_type == "working":
+            # Yellow circle for working
+            pixmap = self._create_colored_pixmap("#2196F3", 16)
+        elif status_type == "success":
+            # Green checkmark
+            pixmap = self._create_colored_pixmap("#4CAF50", 16)
+        elif status_type == "error":
+            # Red X
+            pixmap = self._create_colored_pixmap("#F44336", 16)
+        else:  # info
+            # Gray circle
+            pixmap = self._create_colored_pixmap("#9E9E9E", 16)
+        
+        self.status_icon.setPixmap(pixmap)
+
+    @staticmethod
+    def _create_colored_pixmap(color: str, size: int):
+        """Create a colored circle pixmap.
+        
+        Args:
+            color: Hex color string (e.g., "#4CAF50")
+            size: Size of the pixmap in pixels
+        
+        Returns:
+            QPixmap with colored circle
+        """
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(0, 0, 0, 0))  # Transparent
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(color))
+        painter.setPen(QColor(color))
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.end()
+        
+        return pixmap
 
     def on_activities_fetched(self, activities: List[Activity]):
         """Handle successful activity fetch."""
@@ -373,7 +427,7 @@ class MainWindow(QMainWindow):
         # Update UI
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.status_label.setText(f"Loaded {len(activities)} activities")
+        self.update_status(f"Loaded {len(activities)} activities", "success")
 
         # Enable selection buttons
         self.select_all_button.setEnabled(True)
@@ -389,7 +443,7 @@ class MainWindow(QMainWindow):
         # Update UI
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.status_label.setText("Error fetching activities")
+        self.update_status("Error fetching activities", "error")
 
         # Check if this is a token-related error
         if "No token data available" in error_msg or "not authenticated" in error_msg.lower():

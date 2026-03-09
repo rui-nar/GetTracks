@@ -1,17 +1,33 @@
 <svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   <!-- Background circle -->
   <circle cx="256" cy="256" r="240" fill="#FC4C02" stroke="#FFFFFF" stroke-width="32"/>
-  
-  <!-- Track/path icon -->
-  <path d="M150 200 Q256 150 362 200 Q362 300 256 350 Q150 300 150 200 Z" 
-        fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round"/>
-  
-  <!-- Start point -->
-  <circle cx="150" cy="200" r="20" fill="#FFFFFF"/>
-  
-  <!-- End point -->
-  <circle cx="362" cy="200" r="20" fill="#FFFFFF"/>
-  
-  <!-- Arrow indicating direction -->
-  <path d="M320 180 L350 200 L320 220" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Track 1 (blue) -->
+  <path d="M80 180 Q200 150 320 180 Q380 220 420 260"
+        fill="none" stroke="#2196F3" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- Track 2 (green) -->
+  <path d="M80 320 Q200 350 320 320 Q380 280 420 240"
+        fill="none" stroke="#4CAF50" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- Merged track (white) -->
+  <path d="M380 220 Q400 230 420 250"
+        fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round"/>
+
+  <!-- Start circles -->
+  <circle cx="80" cy="180" r="20" fill="#2196F3"/>  <!-- Blue start -->
+  <circle cx="80" cy="320" r="20" fill="#4CAF50"/>  <!-- Green start -->
+
+  <!-- End circle (merged) -->
+  <circle cx="420" cy="250" r="20" fill="#FFFFFF"/>
+
+  <!-- Direction arrows -->
+  <!-- Blue arrow -->
+  <path d="M350 190 L370 200 L350 210" fill="#2196F3" stroke="#2196F3" stroke-width="2"/>
+  <!-- Green arrow -->
+  <path d="M350 310 L370 300 L350 290" fill="#4CAF50" stroke="#4CAF50" stroke-width="2"/>
+
+  <!-- Merge arrows -->
+  <path d="M390 210 L410 220 L390 230" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="2"/>
+  <path d="M390 250 L410 240 L390 260" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="2"/>
 </svg>
