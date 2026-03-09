@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git --version)",
+      "Bash(python -m venv .venv)",
+      "Bash(py --version)",
+      "Bash(py -3 --version)",
+      "Bash(where python)",
+      "Bash(where python3)",
+      "Bash(where py)",
+      "Bash(ls /c/Python*)",
+      "Read(//c/Users/$USER/AppData/Local/Programs/**)",
+      "Read(//c/Users/rui_n/AppData/Local/Programs//**)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(find /c -maxdepth 4 -name \"python.exe\")",
+      "Bash(py -3 -m venv .venv)"
+    ]
+  }
+}
