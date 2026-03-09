@@ -4,18 +4,20 @@
 import sys
 import os
 
-# Add src to path for imports
+# Ensure project root and src directory are on the path for imports
 project_root = os.path.dirname(os.path.abspath(__file__))
 src_path = os.path.join(project_root, 'src')
+
+# project_root allows absolute imports of the 'src' package
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# src_path allows treating gui as top-level module
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-try:
-    from gui.main_window import main
-except ImportError:
-    # Fallback: try direct import
-    sys.path.insert(0, project_root)
-    from src.gui.main_window import main
+# Import main entrypoint from gui package
+from gui.main_window import main
 
 if __name__ == "__main__":
     sys.exit(main())

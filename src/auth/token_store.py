@@ -26,3 +26,11 @@ class TokenStore:
             return json.loads(data) if data else None
         except Exception as e:
             raise TokenError(f"Unable to load token: {e}")
+
+    @staticmethod
+    def delete_token(user_id: str) -> None:
+        """Delete stored token."""
+        try:
+            keyring.delete_password(TokenStore.SERVICE_NAME, user_id)
+        except Exception as e:
+            raise TokenError(f"Unable to delete token: {e}")

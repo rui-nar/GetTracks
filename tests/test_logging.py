@@ -51,6 +51,8 @@ class TestSetupLogging:
             # Remove logger from registry
             if logger_name in logging.Logger.manager.loggerDict:
                 del logging.Logger.manager.loggerDict[logger_name]
+            # Shutdown logging to release file handles
+            logging.shutdown()
 
     def test_setup_logging_creates_log_directory(self):
         """Test that log directory is created if it doesn't exist."""
@@ -75,6 +77,8 @@ class TestSetupLogging:
             # Remove logger from registry
             if logger_name in logging.Logger.manager.loggerDict:
                 del logging.Logger.manager.loggerDict[logger_name]
+            # Shutdown logging to release file handles
+            logging.shutdown()
 
     def test_setup_logging_console_handler(self):
         """Test that console handler is added."""

@@ -24,12 +24,28 @@ class StravaAPI:
     def _ensure_token(self) -> None:
         """Ensure access token is valid, refresh if needed."""
         if not self.token_data:
-            raise AuthenticationError("No token data available")
+            raise AuthenticationError("No token data available. Please authenticate with Strava.")
 
         # simple expiration check
         if self.token_data.get("expires_at", 0) < time.time():
-            self.token_data = self.oauth.refresh_token(self.token_data.get("refresh_token"))
-            TokenStore.save_token(self.user_id, self.token_data)
+            try:
+                self.token_data = self.oauth.refresh_token(self.token_data.get("refresh_token"))
+                TokenStore.save_token(self.user_id, self.token_data)
+            except TokenError as e:
+                # Token refresh failed - clear the invalid token
+                self.clear_token()
+                raise AuthenticationError(
+                    "Token refresh failed. Please re-authenticate with Strava. "
+                    f"Error: {str(e)}"
+                )
+
+    def clear_token(self) -> None:
+        """Clear stored token data."""
+        self.token_data = {}
+        try:
+            TokenStore.delete_token(self.user_id)
+        except Exception:
+            pass  # Token might not exist or can't be deleted
 
     def set_token(self, token_data: Dict[str, any]) -> None:
         """Store initial token data."""

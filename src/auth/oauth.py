@@ -5,7 +5,7 @@ import requests
 from typing import Dict, Optional
 
 from src.config.settings import Config
-from src.exceptions.errors import AuthenticationError, TokenError
+from src.exceptions.errors import AuthenticationError, TokenError, ConfigurationError
 
 
 class OAuth2Session:

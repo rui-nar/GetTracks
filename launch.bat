@@ -28,10 +28,11 @@ if not exist "config.json" (
     echo See README.md for details
 )
 
-REM Set Python path for src modules and use venv Python directly
-set PYTHONPATH=%CD%\src
+REM Ensure project root is on PYTHONPATH so absolute imports succeed
+set PYTHONPATH=%CD%
+REM clear PYTHONHOME in case it interferes
 set PYTHONHOME=
-set PYTHONEXECUTABLE=%CD%\.venv\Scripts\python.exe
+REM PYTHONEXECUTABLE not required
 
 REM Launch the application using venv Python
 echo Launching GetTracks GUI...

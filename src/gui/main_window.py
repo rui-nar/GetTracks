@@ -12,6 +12,7 @@ from PyQt6.QtGui import QFont, QIcon
 
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI
+from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
 from src.utils.logging import setup_logging
 
@@ -145,6 +146,55 @@ class FetchActivitiesWorker(QThread):
             self.error.emit(str(e))
 
 
+class OAuthAuthenticationWorker(QThread):
+    """Worker thread for handling OAuth authentication."""
+
+    finished = pyqtSignal(dict)  # token_data
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, api_client: StravaAPI):
+        super().__init__()
+        self.api_client = api_client
+
+    def run(self):
+        """Handle OAuth authentication flow."""
+        import webbrowser
+        
+        try:
+            self.progress.emit("Starting authentication...")
+            
+            # Start the callback server
+            callback_server = OAuthCallbackServer(port=8000)
+            callback_server.start()
+            self.progress.emit("Opening browser for authentication...")
+            
+            # Open browser to authorization URL
+            auth_url = self.api_client.oauth.authorization_url()
+            webbrowser.open(auth_url)
+            
+            # Wait for callback
+            self.progress.emit("Waiting for authorization...")
+            auth_code = callback_server.wait_for_callback(timeout=300)
+            callback_server.stop()
+            
+            if not auth_code:
+                raise Exception("Authorization timeout - please try again")
+            
+            # Exchange code for token
+            self.progress.emit("Exchanging authorization code for token...")
+            token_data = self.api_client.oauth.exchange_code(auth_code)
+            
+            # Store token
+            self.progress.emit("Storing token...")
+            self.api_client.set_token(token_data)
+            
+            self.finished.emit(token_data)
+            
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -179,6 +229,11 @@ class MainWindow(QMainWindow):
 
         # Control buttons
         button_layout = QHBoxLayout()
+        
+        self.auth_button = QPushButton("Authenticate with Strava")
+        self.auth_button.setMinimumHeight(35)
+        button_layout.addWidget(self.auth_button)
+        
         self.fetch_button = QPushButton("Fetch Activities")
         self.fetch_button.setMinimumHeight(35)
         button_layout.addWidget(self.fetch_button)
@@ -217,10 +272,63 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Connect UI signals to handlers."""
+        self.auth_button.clicked.connect(self.authenticate)
         self.fetch_button.clicked.connect(self.fetch_activities)
         self.select_all_button.clicked.connect(self.select_all_activities)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.activity_list.activity_selected.connect(self.activity_details.set_activity)
+
+    def authenticate(self):
+        """Start authentication with Strava."""
+        self.logger.info("Starting Strava authentication")
+
+        # Update UI
+        self.auth_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.status_label.setText("Authenticating with Strava...")
+
+        # Start authentication worker thread
+        self.auth_worker = OAuthAuthenticationWorker(self.api_client)
+        self.auth_worker.progress.connect(self.update_progress)
+        self.auth_worker.finished.connect(self.on_authenticated)
+        self.auth_worker.error.connect(self.on_auth_error)
+        self.auth_worker.start()
+
+    def on_authenticated(self, token_data: dict):
+        """Handle successful authentication."""
+        self.logger.info("Successfully authenticated with Strava")
+
+        # Update UI
+        self.auth_button.setEnabled(True)
+        self.auth_button.setText("✓ Authenticated")
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("Successfully authenticated! Click 'Fetch Activities' to load your activities.")
+
+        # Show success message
+        QMessageBox.information(
+            self,
+            "Authentication Successful",
+            "You have successfully authenticated with Strava.\n\n"
+            "Now you can click 'Fetch Activities' to load your activity data."
+        )
+
+    def on_auth_error(self, error_msg: str):
+        """Handle authentication error."""
+        self.logger.error(f"Authentication error: {error_msg}")
+
+        # Update UI
+        self.auth_button.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("Authentication failed")
+
+        # Show error dialog
+        QMessageBox.critical(
+            self,
+            "Authentication Failed",
+            f"Failed to authenticate with Strava:\n\n{error_msg}\n\n"
+            "Please try again."
+        )
 
     def fetch_activities(self):
         """Start fetching activities from Strava."""
@@ -268,12 +376,21 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.status_label.setText("Error fetching activities")
 
-        # Show error dialog
-        QMessageBox.critical(
-            self,
-            "Fetch Error",
-            f"Failed to fetch activities from Strava:\n\n{error_msg}"
-        )
+        # Check if this is a token-related error
+        if "No token data available" in error_msg or "not authenticated" in error_msg.lower():
+            QMessageBox.warning(
+                self,
+                "Authentication Required",
+                "You need to authenticate with Strava first.\n\n"
+                "Please click 'Authenticate with Strava' to authorize the application."
+            )
+        else:
+            # Show error dialog for other errors
+            QMessageBox.critical(
+                self,
+                "Fetch Error",
+                f"Failed to fetch activities from Strava:\n\n{error_msg}"
+            )
 
     def select_all_activities(self):
         """Select all activities in the list."""
