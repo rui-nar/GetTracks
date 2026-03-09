@@ -16,6 +16,12 @@ See [architecture.md](architecture.md) for technical decisions and design.
 
 ## Setup
 
+### Quick Setup (Windows)
+1. Double-click `setup.bat` to create the virtual environment and install dependencies
+2. Configure your Strava credentials in `config.json`
+3. Double-click `launch.bat` to start the application
+
+### Manual Setup
 ```bash
 python -m venv .venv
 # Windows
@@ -28,9 +34,24 @@ pip install -r requirements.txt
 
 ## Run
 
+### Quick Launch (Windows)
+Double-click `launch.bat` to automatically set up the environment and start the application.
+
+### Manual Launch
+To run the GUI application manually:
+
 ```bash
+PYTHONPATH=src python main.py
+```
+
+Or on Windows:
+
+```cmd
+set PYTHONPATH=src
 python main.py
 ```
+
+This launches the PyQt6 desktop application for browsing and selecting Strava activities.
 
 ## Testing
 
