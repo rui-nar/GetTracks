@@ -2,11 +2,12 @@
 
 import sys
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QPushButton, QProgressBar,
-    QMessageBox, QTextEdit, QSplitter, QFrame
+    QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
@@ -15,6 +16,8 @@ from src.config.settings import Config
 from src.api.strava_client import StravaAPI
 from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
+from src.models.track import Track, TrackPoint
+from src.gpx.processor import GPXProcessor
 from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.filter_widget import FilterWidget
@@ -36,6 +39,7 @@ class ActivityListWidget(QListWidget):
         """Set up the UI components."""
         self.setMinimumWidth(300)
         self.setAlternatingRowColors(True)
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
 
     def set_activities(self, activities: List[Activity]):
         """Set the list of activities to display."""
@@ -199,6 +203,77 @@ class OAuthAuthenticationWorker(QThread):
             self.error.emit(str(e))
 
 
+class StreamFetchWorker(QThread):
+    """Fetch full-resolution GPS streams for a list of activities."""
+
+    finished = pyqtSignal(list)   # List[Track]
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, api_client: StravaAPI, activities: List[Activity]):
+        super().__init__()
+        self.api_client = api_client
+        self.activities = activities
+
+    def run(self):
+        tracks: List[Track] = []
+        skipped = 0
+
+        for i, activity in enumerate(self.activities, 1):
+            self.progress.emit(
+                f"Fetching streams {i}/{len(self.activities)}: {activity.name}"
+            )
+
+            if not activity.start_latlng:
+                skipped += 1
+                continue
+
+            try:
+                streams = self.api_client.get_activity_streams(activity.id)
+            except Exception as e:
+                self.error.emit(
+                    f"Failed to fetch streams for '{activity.name}': {e}"
+                )
+                return
+
+            latlng_data = streams.get("latlng", {}).get("data", [])
+            if not latlng_data:
+                skipped += 1
+                continue
+
+            altitude_data = streams.get("altitude", {}).get("data", [])
+            time_data = streams.get("time", {}).get("data", [])   # seconds from start
+
+            # Build absolute UTC timestamps from elapsed-second offsets
+            start_utc = activity.start_date
+            if start_utc.tzinfo is None:
+                start_utc = start_utc.replace(tzinfo=timezone.utc)
+
+            points: List[TrackPoint] = []
+            for j, (lat, lon) in enumerate(latlng_data):
+                elevation = altitude_data[j] if j < len(altitude_data) else None
+                time = (
+                    start_utc + timedelta(seconds=time_data[j])
+                    if j < len(time_data)
+                    else None
+                )
+                points.append(TrackPoint(lat=lat, lon=lon,
+                                         elevation=elevation, time=time))
+
+            tracks.append(Track(
+                activity_id=activity.id,
+                activity_name=activity.name,
+                start_time=start_utc,
+                points=points,
+            ))
+
+        if skipped:
+            self.progress.emit(
+                f"Done — {skipped} indoor/no-GPS activit{'y' if skipped == 1 else 'ies'} skipped"
+            )
+        self.finished.emit(tracks)
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -265,6 +340,13 @@ class MainWindow(QMainWindow):
         self.clear_selection_button.setEnabled(False)
         button_layout.addWidget(self.clear_selection_button)
 
+        self.export_button = QPushButton("Export Selected")
+        self.export_button.setEnabled(False)
+        self.export_button.setToolTip(
+            "Fetch full GPS tracks for selected activities and export as GPX"
+        )
+        button_layout.addWidget(self.export_button)
+
         left_layout.addLayout(button_layout)
 
         # Filter widget
@@ -312,7 +394,9 @@ class MainWindow(QMainWindow):
         self.fetch_button.clicked.connect(self.fetch_activities)
         self.select_all_button.clicked.connect(self.select_all_activities)
         self.clear_selection_button.clicked.connect(self.clear_selection)
+        self.export_button.clicked.connect(self.on_export_selected)
         self.activity_list.activity_selected.connect(self.on_activity_selected)
+        self.activity_list.itemSelectionChanged.connect(self._update_export_button_state)
         self.filter_widget.filters_changed.connect(self._on_filters_changed)
 
     def on_activity_selected(self, activity: Activity):
@@ -516,6 +600,59 @@ class MainWindow(QMainWindow):
     def clear_selection(self):
         """Clear all activity selections."""
         self.activity_list.clearSelection()
+
+    def _update_export_button_state(self):
+        """Enable export button only when at least one activity is selected."""
+        self.export_button.setEnabled(len(self.activity_list.selectedItems()) > 0)
+
+    def on_export_selected(self):
+        """Fetch GPS streams for selected activities and export as GPX."""
+        activities = self.activity_list.get_selected_activities()
+        if not activities:
+            return
+
+        self.export_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.update_status(f"Fetching GPS streams for {len(activities)} activit{'y' if len(activities) == 1 else 'ies'}...", "working")
+
+        self.stream_worker = StreamFetchWorker(self.api_client, activities)
+        self.stream_worker.progress.connect(self.update_progress)
+        self.stream_worker.finished.connect(self.on_streams_fetched)
+        self.stream_worker.error.connect(self.on_fetch_error)
+        self.stream_worker.start()
+
+    def on_streams_fetched(self, tracks: List[Track]):
+        """Handle fetched GPS streams — prompt for save path and write GPX."""
+        self.progress_bar.setVisible(False)
+        self._update_export_button_state()
+
+        if not tracks:
+            self.update_status("No GPS tracks found in selection (indoor activities?)", "error")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export GPX", "", "GPX Files (*.gpx)"
+        )
+        if not path:
+            self.update_status("Export cancelled", "info")
+            return
+
+        if not path.endswith(".gpx"):
+            path += ".gpx"
+
+        gpx = GPXProcessor.merge(tracks)
+        warnings = GPXProcessor.validate(gpx)
+        GPXProcessor.save(gpx, path)
+
+        selected = self.activity_list.get_selected_activities()
+        skipped = len(selected) - len(tracks)
+        msg = f"Exported {len(tracks)} track(s) to {os.path.basename(path)}"
+        if skipped:
+            msg += f" ({skipped} indoor/no-GPS activit{'y' if skipped == 1 else 'ies'} skipped)"
+        if warnings:
+            msg += f" — {len(warnings)} warning(s)"
+        self.update_status(msg, "success")
 
 
 def main():

@@ -144,4 +144,10 @@ class StravaAPI:
         """Fetch list of activities."""
         return self.request("GET", "/athlete/activities", params=params)
 
-    # other API methods would follow
+    def get_activity_streams(self, activity_id: int) -> Dict[str, Any]:
+        """Fetch GPS streams (latlng, altitude, time) for a single activity."""
+        return self.request(
+            "GET",
+            f"/activities/{activity_id}/streams",
+            params={"keys": "latlng,altitude,time", "key_by_type": "true"},
+        )
