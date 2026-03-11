@@ -15,7 +15,10 @@ from src.config.settings import Config
 from src.api.strava_client import StravaAPI
 from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
+from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
+from src.gui.filter_widget import FilterWidget
+from src.filters.filter_engine import FilterCriteria, FilterEngine
 
 
 class ActivityListWidget(QListWidget):
@@ -204,6 +207,8 @@ class MainWindow(QMainWindow):
         self.config = config
         self.api_client = StravaAPI(config)
         self.logger = setup_logging(__name__)
+        self._all_activities: List[Activity] = []
+        self._filter_engine = FilterEngine()
 
         self.setup_ui()
         self.connect_signals()
@@ -211,7 +216,7 @@ class MainWindow(QMainWindow):
     def setup_ui(self):
         """Set up the main UI."""
         self.setWindowTitle("GetTracks - Strava Activity Merger")
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1200, 800)
         
         # Load and set application icon
         icon_paths = [
@@ -231,12 +236,11 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        # Main layout
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        # Create splitter for resizable panels
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
+        # Main horizontal splitter: left = activity list, right = details + map
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(main_splitter)
 
         # Left panel - Activity list
         left_panel = QWidget()
@@ -244,11 +248,11 @@ class MainWindow(QMainWindow):
 
         # Control buttons
         button_layout = QHBoxLayout()
-        
+
         self.auth_button = QPushButton("Authenticate with Strava")
         self.auth_button.setMinimumHeight(35)
         button_layout.addWidget(self.auth_button)
-        
+
         self.fetch_button = QPushButton("Fetch Activities")
         self.fetch_button.setMinimumHeight(35)
         button_layout.addWidget(self.fetch_button)
@@ -263,6 +267,10 @@ class MainWindow(QMainWindow):
 
         left_layout.addLayout(button_layout)
 
+        # Filter widget
+        self.filter_widget = FilterWidget()
+        left_layout.addWidget(self.filter_widget)
+
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -272,14 +280,24 @@ class MainWindow(QMainWindow):
         self.activity_list = ActivityListWidget()
         left_layout.addWidget(self.activity_list)
 
-        splitter.addWidget(left_panel)
+        main_splitter.addWidget(left_panel)
 
-        # Right panel - Activity details
+        # Right panel - vertical splitter: details on top, map on bottom
+        right_splitter = QSplitter(Qt.Orientation.Vertical)
+
         self.activity_details = ActivityDetailsWidget()
-        splitter.addWidget(self.activity_details)
+        right_splitter.addWidget(self.activity_details)
 
-        # Set splitter proportions
-        splitter.setSizes([400, 600])
+        self.map_widget = MapWidget()
+        self.map_widget.setMinimumHeight(200)
+        self.map_widget.setVisible(False)
+        right_splitter.addWidget(self.map_widget)
+
+        right_splitter.setSizes([300, 400])
+        main_splitter.addWidget(right_splitter)
+
+        # Set main splitter proportions
+        main_splitter.setSizes([400, 800])
         
         # Status bar with icon
         self.status_bar = self.statusBar()
@@ -294,7 +312,14 @@ class MainWindow(QMainWindow):
         self.fetch_button.clicked.connect(self.fetch_activities)
         self.select_all_button.clicked.connect(self.select_all_activities)
         self.clear_selection_button.clicked.connect(self.clear_selection)
-        self.activity_list.activity_selected.connect(self.activity_details.set_activity)
+        self.activity_list.activity_selected.connect(self.on_activity_selected)
+        self.filter_widget.filters_changed.connect(self._on_filters_changed)
+
+    def on_activity_selected(self, activity: Activity):
+        """Handle activity selection - update details and map."""
+        self.activity_details.set_activity(activity)
+        self.map_widget.setVisible(True)
+        self.map_widget.display_single_activity(activity)
 
     def authenticate(self):
         """Start authentication with Strava."""
@@ -424,6 +449,8 @@ class MainWindow(QMainWindow):
         """Handle successful activity fetch."""
         self.logger.info(f"Fetched {len(activities)} activities")
 
+        self._all_activities = activities
+
         # Update UI
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -433,8 +460,29 @@ class MainWindow(QMainWindow):
         self.select_all_button.setEnabled(True)
         self.clear_selection_button.setEnabled(True)
 
-        # Display activities
+        # Populate filter type checkboxes from fresh data
+        self.filter_widget.populate_types(activities)
+
+        # Display all activities (no filter active yet)
         self.activity_list.set_activities(activities)
+
+        # Show map and display activity overview
+        self.map_widget.setVisible(True)
+        self.map_widget.display_activities(activities)
+
+    def _on_filters_changed(self, criteria: FilterCriteria) -> None:
+        """Apply filters and refresh the activity list and map."""
+        filtered = self._filter_engine.apply(self._all_activities, criteria)
+        self.activity_list.set_activities(filtered)
+        self.update_status(
+            f"Showing {len(filtered)} of {len(self._all_activities)} activities",
+            "info",
+        )
+        if filtered:
+            self.map_widget.setVisible(True)
+            self.map_widget.display_activities(filtered)
+        else:
+            self.map_widget.setVisible(False)
 
     def on_fetch_error(self, error_msg: str):
         """Handle fetch error."""

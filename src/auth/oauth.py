@@ -2,7 +2,8 @@
 
 import webbrowser
 import requests
-from typing import Dict, Optional
+from urllib.parse import urlencode
+from typing import Any, Dict, Optional
 
 from src.config.settings import Config
 from src.exceptions.errors import AuthenticationError, TokenError, ConfigurationError
@@ -30,13 +31,13 @@ class OAuth2Session:
             "approval_prompt": "auto",
             "scope": scope,
         }
-        return f"{self.AUTH_URL}?" + "&".join(f"{k}={v}" for k, v in params.items())
+        return f"{self.AUTH_URL}?{urlencode(params)}"
 
     def open_authorization(self, scope: str = "activity:read_all") -> None:
         url = self.authorization_url(scope)
         webbrowser.open(url)
 
-    def exchange_code(self, code: str) -> Dict[str, any]:
+    def exchange_code(self, code: str) -> Dict[str, Any]:
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -49,7 +50,7 @@ class OAuth2Session:
         token_data = resp.json()
         return token_data
 
-    def refresh_token(self, refresh_token: str) -> Dict[str, any]:
+    def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,

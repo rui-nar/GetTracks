@@ -1,7 +1,7 @@
 """Activity data model for Strava activities."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 
 
@@ -10,7 +10,7 @@ class Activity:
     """Represents a Strava activity with metadata."""
 
     # All required fields (no defaults) must come first
-    id: int
+    id: Optional[int]
     name: str
     type: str
     distance: float  # meters
@@ -45,6 +45,8 @@ class Activity:
     display_hide_heartrate_option: bool = False
     elev_high: Optional[float] = None
     elev_low: Optional[float] = None
+    start_latlng: Optional[List[float]] = None  # [lat, lng]
+    end_latlng: Optional[List[float]] = None    # [lat, lng]
 
     def __str__(self) -> str:
         """Return string representation of activity."""
@@ -92,4 +94,6 @@ class Activity:
             display_hide_heartrate_option=data.get("display_hide_heartrate_option", False),
             elev_high=data.get("elev_high"),
             elev_low=data.get("elev_low"),
+            start_latlng=data.get("start_latlng"),
+            end_latlng=data.get("end_latlng"),
         )
