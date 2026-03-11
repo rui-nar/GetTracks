@@ -1,113 +1,198 @@
-"""Unit tests for GUI components (mocked to avoid display issues)."""
+"""pytest-qt tests for ActivityListWidget and ActivityDetailsWidget."""
+
+from datetime import datetime
 
 import pytest
-from unittest.mock import MagicMock, patch
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 
-from src.config.settings import Config
-from src.models.activity import Activity
 from src.gui.main_window import ActivityListWidget, ActivityDetailsWidget
 
 
-@pytest.fixture(scope="session")
-def qapp():
-    """Create QApplication instance for tests."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    yield app
+# ---------------------------------------------------------------------------
+# ActivityListWidget
+# ---------------------------------------------------------------------------
+
+class TestActivityListWidget:
+
+    def test_empty_list_shows_no_items(self, qtbot):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([])
+        assert w.count() == 0
+
+    def test_set_activities_populates_items(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(id=1), make_activity(id=2)])
+        assert w.count() == 2
+
+    def test_set_activities_stores_activity_count(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activities = [make_activity(id=i) for i in range(5)]
+        w.set_activities(activities)
+        assert len(w.activities) == 5
+
+    def test_item_text_contains_name(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(name="Sunday Long Run")])
+        assert "Sunday Long Run" in w.item(0).text()
+
+    def test_item_text_contains_type(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(type="Ride")])
+        assert "Ride" in w.item(0).text()
+
+    def test_item_text_contains_distance_km(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(distance=21097.5)])
+        assert "21.1" in w.item(0).text()
+
+    def test_item_text_contains_date(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(start_date_local=datetime(2025, 8, 20, 7, 30))])
+        assert "2025-08-20" in w.item(0).text()
+
+    def test_item_stores_activity_as_user_role(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activity = make_activity()
+        w.set_activities([activity])
+        stored = w.item(0).data(Qt.ItemDataRole.UserRole)
+        assert stored is activity
+
+    def test_set_activities_clears_previous(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity(id=1), make_activity(id=2)])
+        w.set_activities([make_activity(id=3)])
+        assert w.count() == 1
+
+    def test_activity_selected_signal_emitted_on_click(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activity = make_activity()
+        w.set_activities([activity])
+        received = []
+        w.activity_selected.connect(received.append)
+        w.itemClicked.emit(w.item(0))
+        assert len(received) == 1
+
+    def test_activity_selected_signal_carries_correct_activity(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activity = make_activity(name="Specific Activity")
+        w.set_activities([activity])
+        received = []
+        w.activity_selected.connect(received.append)
+        w.itemClicked.emit(w.item(0))
+        assert received[0].name == "Specific Activity"
+
+    def test_get_selected_activities_returns_selection(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activity = make_activity()
+        w.set_activities([activity])
+        w.setCurrentItem(w.item(0))
+        assert len(w.get_selected_activities()) == 1
+        assert w.get_selected_activities()[0] is activity
+
+    def test_get_selected_activities_empty_when_none_selected(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        w.set_activities([make_activity()])
+        assert w.get_selected_activities() == []
+
+    def test_ordering_preserved(self, qtbot, make_activity):
+        w = ActivityListWidget()
+        qtbot.addWidget(w)
+        activities = [make_activity(id=i, name=f"Activity {i}") for i in range(3)]
+        w.set_activities(activities)
+        for i in range(3):
+            item = w.item(i)
+            stored = item.data(Qt.ItemDataRole.UserRole)
+            assert stored.id == i
 
 
-def test_activity_list_widget(qapp):
-    """Test ActivityListWidget basic functionality."""
-    widget = ActivityListWidget()
+# ---------------------------------------------------------------------------
+# ActivityDetailsWidget
+# ---------------------------------------------------------------------------
 
-    # Create test activities
-    activities = [
-        Activity(
-            id=1, name='Run 1', type='Run', distance=5000.0,
-            moving_time=1200, elapsed_time=1250, total_elevation_gain=50.0,
-            start_date_local=MagicMock(), start_date=MagicMock(),
-            timezone='UTC', achievement_count=0, kudos_count=0,
-            comment_count=0, athlete_count=1, photo_count=0,
-            trainer=False, commute=False, manual=False, private=False,
-            flagged=False, gear_id=None, average_speed=4.17, max_speed=5.5,
-            has_heartrate=False, average_heartrate=None, max_heartrate=None,
-            heartrate_opt_out=False, display_hide_heartrate_option=False,
-            elev_high=None, elev_low=None, pr_count=0, total_photo_count=0,
-            has_kudoed=False
-        )
-    ]
+class TestActivityDetailsWidget:
 
-    # Mock datetime methods
-    activities[0].start_date_local.strftime = MagicMock(return_value="2023-01-01 08:00")
+    def test_initial_placeholder_text(self, qtbot):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        assert "Select" in w.title_label.text()
 
-    widget.set_activities(activities)
+    def test_set_activity_updates_title(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(name="Evening Ride"))
+        assert w.title_label.text() == "Evening Ride"
 
-    assert widget.count() == 1
-    assert len(widget.activities) == 1
+    def test_set_activity_stores_current(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        activity = make_activity()
+        w.set_activity(activity)
+        assert w.current_activity is activity
 
+    def test_details_contains_type(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(type="Hike"))
+        assert "Hike" in w.details_text.toPlainText()
 
-def test_activity_details_widget(qapp):
-    """Test ActivityDetailsWidget displays activity info."""
-    widget = ActivityDetailsWidget()
+    def test_details_contains_distance(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(distance=42195.0))
+        assert "42.20" in w.details_text.toPlainText()
 
-    activity = Activity(
-        id=1, name='Test Run', type='Run', distance=10000.0,
-        moving_time=1800, elapsed_time=1850, total_elevation_gain=100.0,
-        start_date_local=MagicMock(), start_date=MagicMock(),
-        timezone='UTC', achievement_count=2, kudos_count=5,
-        comment_count=1, athlete_count=1, photo_count=3,
-        trainer=False, commute=False, manual=False, private=False,
-        flagged=False, gear_id=None, average_speed=5.56, max_speed=7.0,
-        has_heartrate=True, average_heartrate=150.0, max_heartrate=180.0,
-        heartrate_opt_out=False, display_hide_heartrate_option=True,
-        elev_high=200.0, elev_low=100.0, pr_count=1, total_photo_count=3,
-        has_kudoed=False
-    )
+    def test_details_contains_date(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(start_date_local=datetime(2025, 11, 5, 6, 0)))
+        assert "2025-11-05" in w.details_text.toPlainText()
 
-    # Mock datetime methods
-    activity.start_date_local.strftime = MagicMock(return_value="2023-01-01 08:00")
+    def test_details_contains_elevation(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(total_elevation_gain=350.0))
+        assert "350" in w.details_text.toPlainText()
 
-    widget.set_activity(activity)
+    def test_details_shows_heartrate_when_available(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(
+            has_heartrate=True,
+            average_heartrate=155.0,
+            max_heartrate=182,
+        ))
+        text = w.details_text.toPlainText()
+        assert "155" in text
+        assert "182" in text
 
-    assert widget.current_activity == activity
-    assert widget.title_label.text() == "Test Run"
-    # Details text should contain activity information
-    details_text = widget.details_text.toPlainText()
-    assert "Test Run" in details_text
-    assert "10.00 km" in details_text
-    assert "150 bpm" in details_text
+    def test_details_omits_heartrate_when_unavailable(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(has_heartrate=False, average_heartrate=None))
+        assert "bpm" not in w.details_text.toPlainText()
 
+    def test_details_contains_kudos(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(kudos_count=42))
+        assert "42" in w.details_text.toPlainText()
 
-def test_activity_list_selection(qapp):
-    """Test activity selection functionality."""
-    widget = ActivityListWidget()
-
-    # Create test activity
-    activity = Activity(
-        id=1, name='Selected Run', type='Run', distance=5000.0,
-        moving_time=1200, elapsed_time=1250, total_elevation_gain=50.0,
-        start_date_local=MagicMock(), start_date=MagicMock(),
-        timezone='UTC', achievement_count=0, kudos_count=0,
-        comment_count=0, athlete_count=1, photo_count=0,
-        trainer=False, commute=False, manual=False, private=False,
-        flagged=False, gear_id=None, average_speed=4.17, max_speed=5.5,
-        has_heartrate=False, average_heartrate=None, max_heartrate=None,
-        heartrate_opt_out=False, display_hide_heartrate_option=False,
-        elev_high=None, elev_low=None, pr_count=0, total_photo_count=0,
-        has_kudoed=False
-    )
-
-    activity.start_date_local.strftime = MagicMock(return_value="2023-01-01 08:00")
-
-    widget.set_activities([activity])
-
-    # Test selection
-    item = widget.item(0)
-    widget.setCurrentItem(item)
-
-    selected = widget.get_selected_activities()
-    assert len(selected) == 1
-    assert selected[0] == activity
+    def test_replacing_activity_updates_title(self, qtbot, make_activity):
+        w = ActivityDetailsWidget()
+        qtbot.addWidget(w)
+        w.set_activity(make_activity(name="First"))
+        w.set_activity(make_activity(name="Second"))
+        assert w.title_label.text() == "Second"
