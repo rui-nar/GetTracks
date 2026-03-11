@@ -17,7 +17,12 @@
       "Bash(py -3 -m venv .venv)",
       "Bash(.venv/Scripts/python -m pytest tests/test_strava_client.py tests/test_filter_engine.py -v)",
       "Bash(.venv/Scripts/python -m pytest tests/test_filter_engine.py -q)",
-      "Bash(.venv/Scripts/python -c \"from PyQt6.QtCore import QDate; d = QDate\\(2024,6,1\\); print\\(type\\(d.toPyDate\\(\\)\\), d.toPyDate\\(\\)\\)\")"
+      "Bash(.venv/Scripts/python -c \"from PyQt6.QtCore import QDate; d = QDate\\(2024,6,1\\); print\\(type\\(d.toPyDate\\(\\)\\), d.toPyDate\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python -m pytest tests/test_filter_engine.py tests/test_strava_client.py -q)",
+      "Bash(.venv/Scripts/python -c \"import pytest_qt; print\\(pytest_qt.__version__\\)\")",
+      "Bash(.venv/Scripts/python -c \"import pytestqt; print\\(pytestqt.__version__\\)\")",
+      "Bash(.venv/Scripts/python -m pytest tests/test_gui.py tests/test_filter_widget.py tests/test_map_widget.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_gui.py tests/test_filter_widget.py tests/test_map_widget.py tests/test_filter_engine.py tests/test_strava_client.py -q)"
     ]
   }
 }
