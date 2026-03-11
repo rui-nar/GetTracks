@@ -47,6 +47,7 @@ class Activity:
     elev_low: Optional[float] = None
     start_latlng: Optional[List[float]] = None  # [lat, lng]
     end_latlng: Optional[List[float]] = None    # [lat, lng]
+    summary_polyline: Optional[str] = None       # Google-encoded polyline
 
     def __str__(self) -> str:
         """Return string representation of activity."""
@@ -96,4 +97,5 @@ class Activity:
             elev_low=data.get("elev_low"),
             start_latlng=data.get("start_latlng"),
             end_latlng=data.get("end_latlng"),
+            summary_polyline=data.get("map", {}).get("summary_polyline") or None,
         )
