@@ -14,7 +14,10 @@
       "Read(//c/Program Files/**)",
       "Read(//c/Program Files \\(x86\\)/**)",
       "Bash(find /c -maxdepth 4 -name \"python.exe\")",
-      "Bash(py -3 -m venv .venv)"
+      "Bash(py -3 -m venv .venv)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_strava_client.py tests/test_filter_engine.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_filter_engine.py -q)",
+      "Bash(.venv/Scripts/python -c \"from PyQt6.QtCore import QDate; d = QDate\\(2024,6,1\\); print\\(type\\(d.toPyDate\\(\\)\\), d.toPyDate\\(\\)\\)\")"
     ]
   }
 }
