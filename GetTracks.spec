@@ -32,14 +32,8 @@ a = Analysis(
         "src.models",
         "src.utils",
         "src.visualization",
-        # PyQt6 WebEngine requires explicit inclusion
-        "PyQt6.QtWebEngineWidgets",
-        "PyQt6.QtWebEngineCore",
-        "PyQt6.QtWebChannel",
-        # Folium writes Jinja2 templates at runtime
-        "folium",
-        "jinja2",
-        "branca",
+        # PyQt6 networking (tile fetching)
+        "PyQt6.QtNetwork",
         # Strava / OAuth
         "requests",
         "requests.adapters",
