@@ -197,13 +197,8 @@ class MapWidget(QWidget):
             self._create_empty_map()
 
     def _base_map(self, center: Tuple[float, float], zoom_start: int) -> folium.Map:
-        """Create a Folium map with the current tile as default and others in LayerControl."""
-        m = folium.Map(location=center, zoom_start=zoom_start, tiles=self._tile_layer)
-        for name, tile in _TILE_OPTIONS.items():
-            if tile != self._tile_layer:
-                folium.TileLayer(tile, name=name).add_to(m)
-        folium.LayerControl().add_to(m)
-        return m
+        """Create a Folium map using the currently selected tile layer."""
+        return folium.Map(location=center, zoom_start=zoom_start, tiles=self._tile_layer)
 
     def _create_empty_map(self) -> None:
         m = self._base_map([40.7128, -74.0060], zoom_start=10)
