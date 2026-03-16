@@ -390,10 +390,10 @@ class MainWindow(QMainWindow):
         self.clear_selection_button.setEnabled(False)
         button_layout.addWidget(self.clear_selection_button)
 
-        self.export_button = QPushButton("Export Selected")
+        self.export_button = QPushButton("Visualise Selection")
         self.export_button.setEnabled(False)
         self.export_button.setToolTip(
-            "Fetch full GPS tracks for selected activities and export as GPX"
+            "Fetch full GPS tracks for selected activities and preview before export"
         )
         button_layout.addWidget(self.export_button)
 
@@ -720,10 +720,10 @@ class MainWindow(QMainWindow):
     def _update_export_button_state(self):
         """Enable/label export button based on selection and preview state."""
         if self._pending_tracks is not None:
-            self.export_button.setText("Save GPX")
+            self.export_button.setText("Export as GPX")
             self.export_button.setEnabled(True)
         else:
-            self.export_button.setText("Export Selected")
+            self.export_button.setText("Visualise Selection")
             self.export_button.setEnabled(len(self.activity_list.selectedItems()) > 0)
 
     def _on_selection_changed(self):
