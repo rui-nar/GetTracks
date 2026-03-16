@@ -21,6 +21,7 @@ from src.models.track import Track, TrackPoint
 from src.gpx.processor import GPXProcessor
 from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
+from src.gui.splash import make_splash
 from src.gui.filter_widget import FilterWidget
 from src.gui.export_options_widget import ExportOptionsWidget
 from src.gui.stats_bar import StatsBarWidget
@@ -829,6 +830,11 @@ def main():
                 app.setWindowIcon(app_icon)
                 break
 
+    # Show splash screen while the app initialises
+    splash = make_splash()
+    splash.show()
+    app.processEvents()
+
     # Load configuration
     config = Config()
 
@@ -842,9 +848,10 @@ def main():
         )
         return 1
 
-    # Create and show main window
+    # Create and show main window; dismiss splash once window is ready
     window = MainWindow(config)
     window.show()
+    splash.finish(window)
 
     return app.exec()
 

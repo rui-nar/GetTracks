@@ -166,7 +166,7 @@ class MapWidget(QWidget):
         self._tile_combo = QComboBox()
         for display_name in _TILE_OPTIONS:
             self._tile_combo.addItem(display_name)
-        self._tile_combo.currentIndexChanged.connect(self._on_tile_changed)
+        self._tile_combo.currentTextChanged.connect(self._on_tile_changed)
         toolbar_layout.addWidget(self._tile_combo)
         toolbar_layout.addStretch()
         outer.addWidget(toolbar)
@@ -179,9 +179,11 @@ class MapWidget(QWidget):
         self.temp_file = None
         outer.addWidget(self.web_view)
 
-    def _on_tile_changed(self, index: int) -> None:
-        self._tile_layer = list(_TILE_OPTIONS.values())[index]
-        self._re_render()
+    def _on_tile_changed(self, display_name: str) -> None:
+        tile = _TILE_OPTIONS.get(display_name)
+        if tile and tile != self._tile_layer:
+            self._tile_layer = tile
+            self._re_render()
 
     def _re_render(self) -> None:
         kind, data = self._last_render
