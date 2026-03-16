@@ -23,6 +23,8 @@ from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.filter_widget import FilterWidget
 from src.gui.export_options_widget import ExportOptionsWidget
+from src.gui.stats_bar import StatsBarWidget
+from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
 from src.filters.filter_engine import FilterCriteria, FilterEngine
 
@@ -289,6 +291,34 @@ class StreamFetchWorker(QThread):
         self.finished.emit(tracks)
 
 
+class ElevationFetchWorker(QThread):
+    """Fetch altitude + distance streams for a single activity."""
+
+    finished = pyqtSignal(list, list)   # distances_km, elevations_m
+    error = pyqtSignal(str)
+
+    def __init__(self, api_client: StravaAPI, activity_id: int) -> None:
+        super().__init__()
+        self.api_client = api_client
+        self.activity_id = activity_id
+
+    def run(self) -> None:
+        try:
+            streams = self.api_client.get_activity_streams(self.activity_id)
+            alt = streams.get("altitude", {}).get("data", [])
+            dist = streams.get("distance", {}).get("data", [])
+            if alt and dist:
+                n = min(len(alt), len(dist))
+                self.finished.emit(
+                    [d / 1000 for d in dist[:n]],
+                    list(alt[:n]),
+                )
+            else:
+                self.finished.emit([], [])
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -385,6 +415,10 @@ class MainWindow(QMainWindow):
         self.activity_list = ActivityListWidget()
         left_layout.addWidget(self.activity_list)
 
+        # Stats bar at the bottom of the left panel
+        self.stats_bar = StatsBarWidget()
+        left_layout.addWidget(self.stats_bar)
+
         main_splitter.addWidget(left_panel)
 
         # Right panel - vertical splitter: details on top, map on bottom
@@ -393,12 +427,17 @@ class MainWindow(QMainWindow):
         self.activity_details = ActivityDetailsWidget()
         right_splitter.addWidget(self.activity_details)
 
+        self.elevation_chart = ElevationChart()
+        self.elevation_chart.setFixedHeight(130)
+        self.elevation_chart.setVisible(False)
+        right_splitter.addWidget(self.elevation_chart)
+
         self.map_widget = MapWidget()
         self.map_widget.setMinimumHeight(200)
         self.map_widget.setVisible(False)
         right_splitter.addWidget(self.map_widget)
 
-        right_splitter.setSizes([300, 400])
+        right_splitter.setSizes([260, 130, 400])
         main_splitter.addWidget(right_splitter)
 
         # Set main splitter proportions
@@ -443,6 +482,7 @@ class MainWindow(QMainWindow):
             self.activity_list.set_activities(cached)
             self.select_all_button.setEnabled(True)
             self.clear_selection_button.setEnabled(True)
+            self.stats_bar.update_stats(cached)
             self.map_widget.setVisible(True)
             self.map_widget.display_activities(cached)
             last = self._cache.last_sync()
@@ -468,10 +508,33 @@ class MainWindow(QMainWindow):
         self._toasts.show(message, level, duration_ms)
 
     def on_activity_selected(self, activity: Activity):
-        """Handle activity selection - update details and map."""
+        """Handle activity selection — update details, map, and elevation chart."""
         self.activity_details.set_activity(activity)
         self.map_widget.setVisible(True)
         self.map_widget.display_single_activity(activity)
+        self._fetch_elevation(activity)
+
+    def _fetch_elevation(self, activity: Activity) -> None:
+        """Start an async fetch of the elevation profile for *activity*."""
+        if not activity.start_latlng:
+            self.elevation_chart.clear()
+            self.elevation_chart.setVisible(False)
+            return
+        self.elevation_chart.setVisible(True)
+        self.elevation_chart.set_loading(True)
+        self._elev_worker = ElevationFetchWorker(self.api_client, activity.id)
+        self._elev_worker.finished.connect(
+            lambda dist, elev: self._on_elevation_fetched(dist, elev, activity.name)
+        )
+        self._elev_worker.error.connect(lambda _: self.elevation_chart.clear())
+        self._elev_worker.start()
+
+    def _on_elevation_fetched(self, distances_km, elevations_m, name: str) -> None:
+        if distances_km and elevations_m:
+            self.elevation_chart.set_data(distances_km, elevations_m, name)
+        else:
+            self.elevation_chart.clear()
+            self.elevation_chart.setVisible(False)
 
     def authenticate(self):
         """Start authentication with Strava."""
@@ -607,6 +670,7 @@ class MainWindow(QMainWindow):
         self.clear_selection_button.setEnabled(True)
         self.filter_widget.populate_types(combined)
         self.activity_list.set_activities(combined)
+        self.stats_bar.update_stats(combined)
         self.map_widget.setVisible(True)
         self.map_widget.display_activities(combined)
 
@@ -614,6 +678,7 @@ class MainWindow(QMainWindow):
         """Apply filters and refresh the activity list and map."""
         filtered = self._filter_engine.apply(self._all_activities, criteria)
         self.activity_list.set_activities(filtered)
+        self.stats_bar.update_stats(filtered)
         self.update_status(
             f"Showing {len(filtered)} of {len(self._all_activities)} activities",
             "info",
