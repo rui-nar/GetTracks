@@ -22,6 +22,7 @@ from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.filter_widget import FilterWidget
 from src.gui.export_options_widget import ExportOptionsWidget
+from src.gui.toast import ToastManager
 from src.filters.filter_engine import FilterCriteria, FilterEngine
 
 
@@ -289,6 +290,8 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.connect_signals()
+        self._toasts = ToastManager(self)
+        self._restore_session()
 
     def setup_ui(self):
         """Set up the main UI."""
@@ -394,6 +397,12 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_icon, 0)
         self.status_bar.addWidget(self.status_text, 1)
 
+    def resizeEvent(self, event):
+        """Reposition toasts when the window is resized."""
+        super().resizeEvent(event)
+        if hasattr(self, "_toasts"):
+            self._toasts.restack()
+
     def connect_signals(self):
         """Connect UI signals to handlers."""
         self.auth_button.clicked.connect(self.authenticate)
@@ -404,6 +413,17 @@ class MainWindow(QMainWindow):
         self.activity_list.activity_selected.connect(self.on_activity_selected)
         self.activity_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.filter_widget.filters_changed.connect(self._on_filters_changed)
+
+    def _restore_session(self) -> None:
+        """If a stored token already exists, update the UI to reflect it."""
+        if self.api_client.token_data:
+            self.auth_button.setText("✓ Connected")
+            self.update_status("Session restored — click 'Fetch Activities' to continue", "success")
+            self.show_toast("Previous session restored", "success", duration_ms=3000)
+
+    def show_toast(self, message: str, level: str = "info", duration_ms: int = 4000) -> None:
+        """Show a floating toast notification."""
+        self._toasts.show(message, level, duration_ms)
 
     def on_activity_selected(self, activity: Activity):
         """Handle activity selection - update details and map."""
@@ -432,36 +452,20 @@ class MainWindow(QMainWindow):
         """Handle successful authentication."""
         self.logger.info("Successfully authenticated with Strava")
 
-        # Update UI
         self.auth_button.setEnabled(True)
-        self.auth_button.setText("✓ Authenticated")
+        self.auth_button.setText("✓ Connected")
         self.progress_bar.setVisible(False)
-        self.update_status("Successfully authenticated! Click 'Fetch Activities' to load your activities.", "success")
-
-        # Show success message
-        QMessageBox.information(
-            self,
-            "Authentication Successful",
-            "You have successfully authenticated with Strava.\n\n"
-            "Now you can click 'Fetch Activities' to load your activity data."
-        )
+        self.update_status("Authenticated — click 'Fetch Activities' to load your activities.", "success")
+        self.show_toast("Successfully authenticated with Strava", "success")
 
     def on_auth_error(self, error_msg: str):
         """Handle authentication error."""
         self.logger.error(f"Authentication error: {error_msg}")
 
-        # Update UI
         self.auth_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.update_status("Authentication failed", "error")
-
-        # Show error dialog
-        QMessageBox.critical(
-            self,
-            "Authentication Failed",
-            f"Failed to authenticate with Strava:\n\n{error_msg}\n\n"
-            "Please try again."
-        )
+        self.show_toast(f"Authentication failed: {error_msg}", "error", duration_ms=6000)
 
     def fetch_activities(self):
         """Start fetching activities from Strava."""
@@ -545,6 +549,7 @@ class MainWindow(QMainWindow):
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.update_status(f"Loaded {len(activities)} activities", "success")
+        self.show_toast(f"Loaded {len(activities)} activities", "success", duration_ms=3000)
 
         # Enable selection buttons
         self.select_all_button.setEnabled(True)
@@ -578,26 +583,20 @@ class MainWindow(QMainWindow):
         """Handle fetch error."""
         self.logger.error(f"Fetch error: {error_msg}")
 
-        # Update UI
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.update_status("Error fetching activities", "error")
 
-        # Check if this is a token-related error
         if "No token data available" in error_msg or "not authenticated" in error_msg.lower():
-            QMessageBox.warning(
-                self,
-                "Authentication Required",
-                "You need to authenticate with Strava first.\n\n"
-                "Please click 'Authenticate with Strava' to authorize the application."
-            )
+            self.update_status("Not authenticated — please connect with Strava first", "error")
+            self.show_toast("Please authenticate with Strava first", "warning", duration_ms=5000)
+        elif "Token refresh failed" in error_msg or "re-authenticate" in error_msg.lower():
+            # Refresh token is dead — reset the auth button so the user can re-auth
+            self.auth_button.setText("Authenticate with Strava")
+            self.update_status("Session expired — please re-authenticate", "error")
+            self.show_toast("Session expired — please re-authenticate with Strava", "error", duration_ms=6000)
         else:
-            # Show error dialog for other errors
-            QMessageBox.critical(
-                self,
-                "Fetch Error",
-                f"Failed to fetch activities from Strava:\n\n{error_msg}"
-            )
+            self.show_toast(f"Fetch error: {error_msg}", "error", duration_ms=6000)
 
     def select_all_activities(self):
         """Select all activities in the list."""
@@ -699,6 +698,7 @@ class MainWindow(QMainWindow):
         if warnings:
             msg += f" — {len(warnings)} warning(s)"
         self.update_status(msg, "success")
+        self.show_toast(msg, "success")
 
 
 def main():
