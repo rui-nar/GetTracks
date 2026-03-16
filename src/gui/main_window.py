@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
 
+from src.cache.activity_cache import ActivityCache
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI
 from src.auth.callback_handler import OAuthCallbackServer
@@ -131,25 +132,37 @@ class ActivityDetailsWidget(QWidget):
 
 
 class FetchActivitiesWorker(QThread):
-    """Worker thread for fetching activities from Strava."""
+    """Worker thread for fetching activities from Strava.
+
+    When *after_date* is provided the worker performs an incremental sync,
+    fetching only activities that started after that UTC datetime (up to
+    200 per page).  Otherwise it fetches the 50 most recent activities.
+    """
 
     finished = pyqtSignal(list)  # List[Activity]
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
 
-    def __init__(self, api_client: StravaAPI):
+    def __init__(self, api_client: StravaAPI, after_date=None):
         super().__init__()
         self.api_client = api_client
+        self.after_date = after_date  # Optional[datetime]
 
     def run(self):
         """Fetch activities in background thread."""
         try:
-            self.progress.emit("Connecting to Strava...")
-            activities_data = self.api_client.get_activities(per_page=50)
+            if self.after_date is not None:
+                self.progress.emit("Syncing new activities from Strava...")
+                after_ts = int(self.after_date.timestamp())
+                activities_data = self.api_client.get_activities(
+                    after=after_ts, per_page=200
+                )
+            else:
+                self.progress.emit("Connecting to Strava...")
+                activities_data = self.api_client.get_activities(per_page=50)
 
             self.progress.emit("Converting data...")
             activities = [Activity.from_strava_api(act) for act in activities_data]
-
             self.finished.emit(activities)
 
         except Exception as e:
@@ -287,6 +300,7 @@ class MainWindow(QMainWindow):
         self._all_activities: List[Activity] = []
         self._filter_engine = FilterEngine()
         self._pending_tracks: Optional[List[Track]] = None  # set during export preview
+        self._cache = ActivityCache(config.get("app.cache_dir", "cache"))
 
         self.setup_ui()
         self.connect_signals()
@@ -415,11 +429,39 @@ class MainWindow(QMainWindow):
         self.filter_widget.filters_changed.connect(self._on_filters_changed)
 
     def _restore_session(self) -> None:
-        """If a stored token already exists, update the UI to reflect it."""
+        """Restore UI state from keyring token and on-disk activity cache."""
         if self.api_client.token_data:
             self.auth_button.setText("✓ Connected")
             self.update_status("Session restored — click 'Fetch Activities' to continue", "success")
             self.show_toast("Previous session restored", "success", duration_ms=3000)
+
+        # Load cached activities immediately so the UI is populated without a network call
+        cached = self._cache.load()
+        if cached:
+            self._all_activities = cached
+            self.filter_widget.populate_types(cached)
+            self.activity_list.set_activities(cached)
+            self.select_all_button.setEnabled(True)
+            self.clear_selection_button.setEnabled(True)
+            self.map_widget.setVisible(True)
+            self.map_widget.display_activities(cached)
+            last = self._cache.last_sync()
+            last_str = last.strftime("%Y-%m-%d %H:%M") if last else "unknown"
+            self.update_status(
+                f"Loaded {len(cached)} cached activities (last sync: {last_str})", "info"
+            )
+            self._update_fetch_button_label()
+
+    def _update_fetch_button_label(self) -> None:
+        """Show 'Sync New' when cache is populated, 'Fetch Activities' otherwise."""
+        if self._cache.count() > 0:
+            most_recent = self._cache.most_recent_start()
+            label = "Sync New Activities"
+            if most_recent:
+                label += f" (since {most_recent.strftime('%Y-%m-%d')})"
+            self.fetch_button.setText(label)
+        else:
+            self.fetch_button.setText("Fetch Activities")
 
     def show_toast(self, message: str, level: str = "info", duration_ms: int = 4000) -> None:
         """Show a floating toast notification."""
@@ -468,17 +510,17 @@ class MainWindow(QMainWindow):
         self.show_toast(f"Authentication failed: {error_msg}", "error", duration_ms=6000)
 
     def fetch_activities(self):
-        """Start fetching activities from Strava."""
+        """Fetch from Strava: incremental sync if cache populated, full fetch otherwise."""
         self.logger.info("Starting activity fetch")
 
-        # Update UI
+        after_date = self._cache.most_recent_start() if self._cache.count() > 0 else None
+
         self.fetch_button.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.update_status("Fetching activities...", "working")
+        self.progress_bar.setRange(0, 0)
+        self.update_status("Syncing activities…" if after_date else "Fetching activities…", "working")
 
-        # Start worker thread
-        self.worker = FetchActivitiesWorker(self.api_client)
+        self.worker = FetchActivitiesWorker(self.api_client, after_date=after_date)
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_activities_fetched)
         self.worker.error.connect(self.on_fetch_error)
@@ -540,30 +582,33 @@ class MainWindow(QMainWindow):
         return pixmap
 
     def on_activities_fetched(self, activities: List[Activity]):
-        """Handle successful activity fetch."""
-        self.logger.info(f"Fetched {len(activities)} activities")
+        """Merge new activities into cache, refresh the UI."""
+        self.logger.info(f"Fetched {len(activities)} activities from Strava")
 
-        self._all_activities = activities
+        # Merge into cache; combined list is deduplicated and sorted newest-first
+        combined = self._cache.merge(activities)
+        new_count = len(activities)
+        total = len(combined)
 
-        # Update UI
+        self._all_activities = combined
+
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.update_status(f"Loaded {len(activities)} activities", "success")
-        self.show_toast(f"Loaded {len(activities)} activities", "success", duration_ms=3000)
 
-        # Enable selection buttons
+        if new_count:
+            msg = f"Synced {new_count} new activit{'y' if new_count == 1 else 'ies'} — {total} total"
+        else:
+            msg = f"No new activities — {total} total in cache"
+        self.update_status(msg, "success")
+        self.show_toast(msg, "success", duration_ms=3000)
+
+        self._update_fetch_button_label()
         self.select_all_button.setEnabled(True)
         self.clear_selection_button.setEnabled(True)
-
-        # Populate filter type checkboxes from fresh data
-        self.filter_widget.populate_types(activities)
-
-        # Display all activities (no filter active yet)
-        self.activity_list.set_activities(activities)
-
-        # Show map and display activity overview
+        self.filter_widget.populate_types(combined)
+        self.activity_list.set_activities(combined)
         self.map_widget.setVisible(True)
-        self.map_widget.display_activities(activities)
+        self.map_widget.display_activities(combined)
 
     def _on_filters_changed(self, criteria: FilterCriteria) -> None:
         """Apply filters and refresh the activity list and map."""

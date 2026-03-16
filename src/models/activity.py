@@ -49,6 +49,50 @@ class Activity:
     end_latlng: Optional[List[float]] = None    # [lat, lng]
     summary_polyline: Optional[str] = None       # Google-encoded polyline
 
+    def to_strava_dict(self) -> dict:
+        """Serialise to a dict that can be round-tripped via from_strava_api()."""
+        def _iso(dt: datetime) -> str:
+            return dt.isoformat().replace("+00:00", "Z") if dt else ""
+
+        return {
+            "id": self.id,
+            "name": self.name,
+            "type": self.type,
+            "distance": self.distance,
+            "moving_time": self.moving_time,
+            "elapsed_time": self.elapsed_time,
+            "total_elevation_gain": self.total_elevation_gain,
+            "start_date": _iso(self.start_date),
+            "start_date_local": _iso(self.start_date_local),
+            "timezone": self.timezone,
+            "achievement_count": self.achievement_count,
+            "kudos_count": self.kudos_count,
+            "comment_count": self.comment_count,
+            "athlete_count": self.athlete_count,
+            "photo_count": self.photo_count,
+            "trainer": self.trainer,
+            "commute": self.commute,
+            "manual": self.manual,
+            "private": self.private,
+            "flagged": self.flagged,
+            "average_speed": self.average_speed,
+            "max_speed": self.max_speed,
+            "has_heartrate": self.has_heartrate,
+            "pr_count": self.pr_count,
+            "total_photo_count": self.total_photo_count,
+            "has_kudoed": self.has_kudoed,
+            "gear_id": self.gear_id,
+            "average_heartrate": self.average_heartrate,
+            "max_heartrate": self.max_heartrate,
+            "heartrate_opt_out": self.heartrate_opt_out,
+            "display_hide_heartrate_option": self.display_hide_heartrate_option,
+            "elev_high": self.elev_high,
+            "elev_low": self.elev_low,
+            "start_latlng": self.start_latlng,
+            "end_latlng": self.end_latlng,
+            "map": {"summary_polyline": self.summary_polyline},
+        }
+
     def __str__(self) -> str:
         """Return string representation of activity."""
         distance_km = self.distance / 1000
