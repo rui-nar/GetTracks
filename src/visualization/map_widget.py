@@ -3,7 +3,7 @@
 import os
 import tempfile
 from typing import List, Optional, Tuple
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtCore import QUrl
@@ -12,6 +12,7 @@ import folium
 import polyline as polyline_codec
 
 from src.models.activity import Activity
+from src.models.track import Track
 
 # Color per activity type
 _TYPE_COLORS = {
@@ -23,22 +24,29 @@ _TYPE_COLORS = {
 }
 _DEFAULT_COLOR = '#666666'
 
+# Cycling palette for track preview (no activity-type context available)
+_TRACK_PALETTE = ['#3388ff', '#e03030', '#228B22', '#9932CC', '#FF8C00', '#1a9850']
+
+# Available tile layers: display name → Folium tile string
+_TILE_OPTIONS = {
+    'OpenStreetMap':    'OpenStreetMap',
+    'CartoDB Positron': 'CartoDB positron',
+    'CartoDB Dark':     'CartoDB dark_matter',
+}
+
 
 class MapWidget(QWidget):
     """Widget for displaying activity tracks on an interactive map."""
 
     def __init__(self):
         super().__init__()
-        self.web_view = QWebEngineView()
-        self.web_view.settings().setAttribute(
-            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
-        )
-        self.temp_file = None
+        self._tile_layer: str = 'OpenStreetMap'
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.web_view)
-        layout.setContentsMargins(0, 0, 0, 0)
+        # Last render state — used to re-render when tile layer changes
+        # ('empty', None) | ('activities', list) | ('single', activity) | ('tracks', list)
+        self._last_render: Tuple = ('empty', None)
 
+        self._setup_ui()
         self.destroyed.connect(self._cleanup_temp_file)
         self._create_empty_map()
 
@@ -48,15 +56,13 @@ class MapWidget(QWidget):
 
     def display_activities(self, activities: List[Activity]) -> None:
         """Render all activities as polylines (or markers for indoor ones)."""
+        self._last_render = ('activities', activities)
         if not activities:
             self._create_empty_map()
             return
 
         center = self._calculate_center(activities)
-        m = folium.Map(location=center, zoom_start=12, tiles='OpenStreetMap')
-        folium.TileLayer('CartoDB positron').add_to(m)
-        folium.TileLayer('CartoDB dark_matter').add_to(m)
-        folium.LayerControl().add_to(m)
+        m = self._base_map(center, zoom_start=12)
 
         for activity in activities:
             color = _TYPE_COLORS.get(activity.type.lower(), _DEFAULT_COLOR)
@@ -66,6 +72,7 @@ class MapWidget(QWidget):
 
     def display_single_activity(self, activity: Activity) -> None:
         """Render one activity prominently and zoom to fit its route."""
+        self._last_render = ('single', activity)
         coords = self._decode_polyline(activity)
 
         if coords:
@@ -76,11 +83,7 @@ class MapWidget(QWidget):
             self._create_empty_map()
             return
 
-        m = folium.Map(location=center, zoom_start=14, tiles='OpenStreetMap')
-        folium.TileLayer('CartoDB positron').add_to(m)
-        folium.TileLayer('CartoDB dark_matter').add_to(m)
-        folium.LayerControl().add_to(m)
-
+        m = self._base_map(center, zoom_start=14)
         color = _TYPE_COLORS.get(activity.type.lower(), _DEFAULT_COLOR)
         self._add_activity_to_map(m, activity, color, weight=5, opacity=1.0,
                                   show_popup=True)
@@ -92,17 +95,116 @@ class MapWidget(QWidget):
 
         self._display_map(m)
 
+    def display_tracks(self, tracks: List[Track]) -> None:
+        """Render full-resolution GPS tracks (e.g. export preview)."""
+        self._last_render = ('tracks', tracks)
+        if not tracks:
+            self._create_empty_map()
+            return
+
+        all_coords = [
+            (pt.lat, pt.lon)
+            for track in tracks
+            for pt in track.points
+        ]
+        if not all_coords:
+            self._create_empty_map()
+            return
+
+        center = (
+            sum(c[0] for c in all_coords) / len(all_coords),
+            sum(c[1] for c in all_coords) / len(all_coords),
+        )
+        m = self._base_map(center, zoom_start=12)
+
+        for i, track in enumerate(tracks):
+            coords = [(pt.lat, pt.lon) for pt in track.points]
+            if not coords:
+                continue
+            color = _TRACK_PALETTE[i % len(_TRACK_PALETTE)]
+            folium.PolyLine(
+                coords,
+                color=color,
+                weight=4,
+                opacity=0.9,
+                tooltip=track.activity_name,
+            ).add_to(m)
+            folium.CircleMarker(
+                location=coords[0],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=1.0,
+                tooltip=f"Start: {track.activity_name}",
+            ).add_to(m)
+
+        lats = [c[0] for c in all_coords]
+        lngs = [c[1] for c in all_coords]
+        m.fit_bounds([[min(lats), min(lngs)], [max(lats), max(lngs)]])
+
+        self._display_map(m)
+
     def clear_map(self) -> None:
+        self._last_render = ('empty', None)
         self._create_empty_map()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _create_empty_map(self) -> None:
-        m = folium.Map(location=[40.7128, -74.0060], zoom_start=10,
-                       tiles='OpenStreetMap')
+    def _setup_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Tile selector toolbar
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(4, 2, 4, 2)
+        toolbar_layout.addWidget(QLabel("Tiles:"))
+        self._tile_combo = QComboBox()
+        for display_name in _TILE_OPTIONS:
+            self._tile_combo.addItem(display_name)
+        self._tile_combo.currentIndexChanged.connect(self._on_tile_changed)
+        toolbar_layout.addWidget(self._tile_combo)
+        toolbar_layout.addStretch()
+        outer.addWidget(toolbar)
+
+        # Map view
+        self.web_view = QWebEngineView()
+        self.web_view.settings().setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+        )
+        self.temp_file = None
+        outer.addWidget(self.web_view)
+
+    def _on_tile_changed(self, index: int) -> None:
+        self._tile_layer = list(_TILE_OPTIONS.values())[index]
+        self._re_render()
+
+    def _re_render(self) -> None:
+        kind, data = self._last_render
+        if kind == 'activities':
+            self.display_activities(data)
+        elif kind == 'single':
+            self.display_single_activity(data)
+        elif kind == 'tracks':
+            self.display_tracks(data)
+        else:
+            self._create_empty_map()
+
+    def _base_map(self, center: Tuple[float, float], zoom_start: int) -> folium.Map:
+        """Create a Folium map with the current tile as default and others in LayerControl."""
+        m = folium.Map(location=center, zoom_start=zoom_start, tiles=self._tile_layer)
+        for name, tile in _TILE_OPTIONS.items():
+            if tile != self._tile_layer:
+                folium.TileLayer(tile, name=name).add_to(m)
         folium.LayerControl().add_to(m)
+        return m
+
+    def _create_empty_map(self) -> None:
+        m = self._base_map([40.7128, -74.0060], zoom_start=10)
         self._display_map(m)
 
     def _add_activity_to_map(self, map_obj: folium.Map, activity: Activity,
@@ -120,7 +222,6 @@ class MapWidget(QWidget):
                 tooltip=tooltip,
             ).add_to(map_obj)
 
-            # Start dot
             popup_html = self._build_popup(activity) if show_popup else None
             folium.CircleMarker(
                 location=coords[0],
@@ -134,7 +235,6 @@ class MapWidget(QWidget):
             ).add_to(map_obj)
 
         elif activity.start_latlng:
-            # Indoor / manual activity — fall back to a plain marker
             popup_html = self._build_popup(activity) if show_popup else tooltip
             folium.Marker(
                 location=activity.start_latlng,

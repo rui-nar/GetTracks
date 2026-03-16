@@ -8,7 +8,7 @@ import pytest
 import gpxpy
 
 from src.models.track import Track, TrackPoint
-from src.gpx.processor import GPXProcessor
+from src.gpx.processor import GPXProcessor, ExportOptions
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +203,107 @@ class TestGPXProcessorSave:
         with open(path, encoding="utf-8") as f:
             reloaded = gpxpy.parse(f)
         assert reloaded.tracks[0].name == "My Route"
+
+
+# ---------------------------------------------------------------------------
+# ExportOptions — concatenate
+# ---------------------------------------------------------------------------
+
+class TestExportOptionsConcatenate:
+
+    def test_default_is_not_concatenated(self):
+        gpx = GPXProcessor.merge([_make_track(1), _make_track(2)])
+        assert len(gpx.tracks) == 2
+
+    def test_concatenate_produces_single_track(self):
+        opts = ExportOptions(concatenate=True)
+        gpx = GPXProcessor.merge([_make_track(1), _make_track(2)], opts)
+        assert len(gpx.tracks) == 1
+
+    def test_concatenate_single_track_name(self):
+        opts = ExportOptions(concatenate=True)
+        gpx = GPXProcessor.merge([_make_track(1), _make_track(2)], opts)
+        assert gpx.tracks[0].name == "Merged track"
+
+    def test_concatenate_all_points_present(self):
+        opts = ExportOptions(concatenate=True)
+        gpx = GPXProcessor.merge([_make_track(n_points=3), _make_track(n_points=4)], opts)
+        total = sum(len(seg.points) for seg in gpx.tracks[0].segments)
+        assert total == 7
+
+    def test_concatenate_empty_list(self):
+        opts = ExportOptions(concatenate=True)
+        gpx = GPXProcessor.merge([], opts)
+        assert gpx.tracks == []
+
+    def test_concatenate_single_source_track(self):
+        opts = ExportOptions(concatenate=True)
+        gpx = GPXProcessor.merge([_make_track(n_points=5)], opts)
+        total = sum(len(seg.points) for seg in gpx.tracks[0].segments)
+        assert total == 5
+
+    def test_concatenate_sorted_chronologically(self):
+        """Points from the earlier track must come first in the merged segment."""
+        t1 = _make_track(activity_id=1, name="Early", start_hour=6, n_points=2)
+        t2 = _make_track(activity_id=2, name="Late",  start_hour=10, n_points=2)
+        opts = ExportOptions(concatenate=True)
+        # Pass in reverse order
+        gpx = GPXProcessor.merge([t2, t1], opts)
+        pts = gpx.tracks[0].segments[0].points
+        assert pts[0].time < pts[2].time
+
+
+# ---------------------------------------------------------------------------
+# ExportOptions — include_time / include_elevation
+# ---------------------------------------------------------------------------
+
+class TestExportOptionsDataContent:
+
+    def test_default_includes_timestamps(self):
+        gpx = GPXProcessor.merge([_make_track(n_points=2)])
+        pt = gpx.tracks[0].segments[0].points[0]
+        assert pt.time is not None
+
+    def test_no_timestamps_when_disabled(self):
+        opts = ExportOptions(include_time=False)
+        gpx = GPXProcessor.merge([_make_track(n_points=2)], opts)
+        for seg in gpx.tracks[0].segments:
+            for pt in seg.points:
+                assert pt.time is None
+
+    def test_default_includes_elevation(self):
+        gpx = GPXProcessor.merge([_make_track(n_points=2)])
+        pt = gpx.tracks[0].segments[0].points[0]
+        assert pt.elevation is not None
+
+    def test_no_elevation_when_disabled(self):
+        opts = ExportOptions(include_elevation=False)
+        gpx = GPXProcessor.merge([_make_track(n_points=2)], opts)
+        for seg in gpx.tracks[0].segments:
+            for pt in seg.points:
+                assert pt.elevation is None
+
+    def test_gps_only_mode_no_time_no_elevation(self):
+        opts = ExportOptions(include_time=False, include_elevation=False)
+        gpx = GPXProcessor.merge([_make_track(n_points=3)], opts)
+        for seg in gpx.tracks[0].segments:
+            for pt in seg.points:
+                assert pt.time is None
+                assert pt.elevation is None
+
+    def test_lat_lon_always_present(self):
+        opts = ExportOptions(include_time=False, include_elevation=False)
+        gpx = GPXProcessor.merge([_make_track(n_points=2)], opts)
+        for seg in gpx.tracks[0].segments:
+            for pt in seg.points:
+                assert pt.latitude is not None
+                assert pt.longitude is not None
+
+    def test_options_none_uses_defaults(self):
+        """Passing options=None must behave identically to ExportOptions()."""
+        gpx_default = GPXProcessor.merge([_make_track(n_points=2)], None)
+        gpx_explicit = GPXProcessor.merge([_make_track(n_points=2)], ExportOptions())
+        pt_d = gpx_default.tracks[0].segments[0].points[0]
+        pt_e = gpx_explicit.tracks[0].segments[0].points[0]
+        assert (pt_d.time is None) == (pt_e.time is None)
+        assert (pt_d.elevation is None) == (pt_e.elevation is None)

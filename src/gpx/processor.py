@@ -1,5 +1,6 @@
 """GPX processing: merge tracks and export to GPX format."""
 
+from dataclasses import dataclass
 from datetime import timezone
 from typing import List
 
@@ -9,42 +10,86 @@ import gpxpy.gpx
 from src.models.track import Track
 
 
+@dataclass
+class ExportOptions:
+    """Controls how tracks are merged and what data is written.
+
+    Attributes:
+        concatenate: When True, all points are merged into a single GPX track
+            (sorted chronologically). When False (default), each source
+            activity becomes its own GPX track so names are preserved.
+        include_time: Include per-point timestamps in the output.
+        include_elevation: Include per-point elevation in the output.
+    """
+
+    concatenate: bool = False
+    include_time: bool = True
+    include_elevation: bool = True
+
+
 class GPXProcessor:
     """Merges Track objects and exports them as a GPX document."""
 
     @staticmethod
-    def merge(tracks: List[Track]) -> gpxpy.gpx.GPX:
-        """Combine tracks into one GPX document, sorted chronologically.
+    def merge(tracks: List[Track], options: ExportOptions | None = None) -> gpxpy.gpx.GPX:
+        """Combine tracks into one GPX document.
 
-        Each source activity becomes its own GPXTrack (segment) so that
-        origin metadata is preserved and viewers can distinguish routes.
+        Args:
+            tracks: Source tracks, typically one per Strava activity.
+            options: Export settings; defaults to ExportOptions() if omitted.
+
+        Returns:
+            A gpxpy.gpx.GPX instance ready for validation and saving.
         """
+        if options is None:
+            options = ExportOptions()
+
         gpx = gpxpy.gpx.GPX()
         gpx.creator = "GetTracks"
 
-        for track in sorted(tracks, key=lambda t: t.start_time):
-            gpx_track = gpxpy.gpx.GPXTrack(name=track.activity_name)
-            segment = gpxpy.gpx.GPXTrackSegment()
+        sorted_tracks = sorted(tracks, key=lambda t: t.start_time)
 
-            for pt in track.points:
-                # gpxpy expects timezone-aware datetimes for correct XML output
-                time = pt.time
-                if time is not None and time.tzinfo is None:
-                    time = time.replace(tzinfo=timezone.utc)
-
-                segment.points.append(
-                    gpxpy.gpx.GPXTrackPoint(
-                        latitude=pt.lat,
-                        longitude=pt.lon,
-                        elevation=pt.elevation,
-                        time=time,
+        if options.concatenate:
+            if sorted_tracks:
+                gpx_track = gpxpy.gpx.GPXTrack(name="Merged track")
+                segment = gpxpy.gpx.GPXTrackSegment()
+                for track in sorted_tracks:
+                    for pt in track.points:
+                        segment.points.append(
+                            GPXProcessor._make_point(pt, options)
+                        )
+                gpx_track.segments.append(segment)
+                gpx.tracks.append(gpx_track)
+        else:
+            for track in sorted_tracks:
+                gpx_track = gpxpy.gpx.GPXTrack(name=track.activity_name)
+                segment = gpxpy.gpx.GPXTrackSegment()
+                for pt in track.points:
+                    segment.points.append(
+                        GPXProcessor._make_point(pt, options)
                     )
-                )
-
-            gpx_track.segments.append(segment)
-            gpx.tracks.append(gpx_track)
+                gpx_track.segments.append(segment)
+                gpx.tracks.append(gpx_track)
 
         return gpx
+
+    @staticmethod
+    def _make_point(pt, options: ExportOptions) -> gpxpy.gpx.GPXTrackPoint:
+        """Build a GPXTrackPoint, respecting include_time / include_elevation."""
+        time = None
+        if options.include_time and pt.time is not None:
+            time = pt.time
+            if time.tzinfo is None:
+                time = time.replace(tzinfo=timezone.utc)
+
+        elevation = pt.elevation if options.include_elevation else None
+
+        return gpxpy.gpx.GPXTrackPoint(
+            latitude=pt.lat,
+            longitude=pt.lon,
+            elevation=elevation,
+            time=time,
+        )
 
     @staticmethod
     def save(gpx: gpxpy.gpx.GPX, path: str) -> None:

@@ -6,7 +6,10 @@ import polyline as polyline_codec
 import pytest
 
 from src.models.activity import Activity
-from src.visualization.map_widget import MapWidget, _DEFAULT_COLOR, _TYPE_COLORS
+from src.models.track import Track, TrackPoint
+from src.visualization.map_widget import (
+    MapWidget, _DEFAULT_COLOR, _TYPE_COLORS, _TRACK_PALETTE, _TILE_OPTIONS
+)
 
 # A known encoded polyline (3-point route near London) and its decoded coords.
 _COORDS = [(51.5074, -0.1278), (51.5080, -0.1284), (51.5090, -0.1295)]
@@ -186,3 +189,44 @@ def test_ride_uses_red_color():
 
 def test_unknown_type_falls_back_to_default():
     assert _DEFAULT_COLOR == "#666666"
+
+
+# ---------------------------------------------------------------------------
+# _TRACK_PALETTE
+# ---------------------------------------------------------------------------
+
+def test_track_palette_has_entries():
+    assert len(_TRACK_PALETTE) >= 2
+
+
+def test_track_palette_colors_are_hex():
+    for color in _TRACK_PALETTE:
+        assert color.startswith("#")
+        assert len(color) == 7
+
+
+def test_track_palette_cycles_without_index_error():
+    for i in range(len(_TRACK_PALETTE) * 3):
+        _ = _TRACK_PALETTE[i % len(_TRACK_PALETTE)]
+
+
+# ---------------------------------------------------------------------------
+# _TILE_OPTIONS
+# ---------------------------------------------------------------------------
+
+def test_tile_options_has_at_least_two_entries():
+    assert len(_TILE_OPTIONS) >= 2
+
+
+def test_tile_options_contains_openstreetmap():
+    assert any("OpenStreetMap" in v for v in _TILE_OPTIONS.values())
+
+
+def test_tile_options_keys_are_strings():
+    for k in _TILE_OPTIONS:
+        assert isinstance(k, str)
+
+
+def test_tile_options_values_are_strings():
+    for v in _TILE_OPTIONS.values():
+        assert isinstance(v, str)

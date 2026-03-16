@@ -21,6 +21,7 @@ from src.gpx.processor import GPXProcessor
 from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.filter_widget import FilterWidget
+from src.gui.export_options_widget import ExportOptionsWidget
 from src.filters.filter_engine import FilterCriteria, FilterEngine
 
 
@@ -284,6 +285,7 @@ class MainWindow(QMainWindow):
         self.logger = setup_logging(__name__)
         self._all_activities: List[Activity] = []
         self._filter_engine = FilterEngine()
+        self._pending_tracks: Optional[List[Track]] = None  # set during export preview
 
         self.setup_ui()
         self.connect_signals()
@@ -353,6 +355,10 @@ class MainWindow(QMainWindow):
         self.filter_widget = FilterWidget()
         left_layout.addWidget(self.filter_widget)
 
+        # Export options
+        self.export_options = ExportOptionsWidget()
+        left_layout.addWidget(self.export_options)
+
         # Progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -396,7 +402,7 @@ class MainWindow(QMainWindow):
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.export_button.clicked.connect(self.on_export_selected)
         self.activity_list.activity_selected.connect(self.on_activity_selected)
-        self.activity_list.itemSelectionChanged.connect(self._update_export_button_state)
+        self.activity_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.filter_widget.filters_changed.connect(self._on_filters_changed)
 
     def on_activity_selected(self, activity: Activity):
@@ -602,11 +608,44 @@ class MainWindow(QMainWindow):
         self.activity_list.clearSelection()
 
     def _update_export_button_state(self):
-        """Enable export button only when at least one activity is selected."""
-        self.export_button.setEnabled(len(self.activity_list.selectedItems()) > 0)
+        """Enable/label export button based on selection and preview state."""
+        if self._pending_tracks is not None:
+            self.export_button.setText("Save GPX")
+            self.export_button.setEnabled(True)
+        else:
+            self.export_button.setText("Export Selected")
+            self.export_button.setEnabled(len(self.activity_list.selectedItems()) > 0)
+
+    def _on_selection_changed(self):
+        """Exit preview mode if the user changes their selection."""
+        if self._pending_tracks is not None:
+            self._exit_preview_mode()
+        self._update_export_button_state()
+
+    def _enter_preview_mode(self, tracks: List[Track]) -> None:
+        """Show export preview on map and switch button to 'Save GPX'."""
+        self._pending_tracks = tracks
+        self.map_widget.setVisible(True)
+        self.map_widget.display_tracks(tracks)
+        n = len(tracks)
+        self.update_status(
+            f"{n} track(s) shown — click 'Save GPX' to export, or change selection to cancel",
+            "info",
+        )
+        self._update_export_button_state()
+
+    def _exit_preview_mode(self) -> None:
+        """Discard pending tracks and restore button to 'Export Selected'."""
+        self._pending_tracks = None
+        self._update_export_button_state()
 
     def on_export_selected(self):
-        """Fetch GPS streams for selected activities and export as GPX."""
+        """Either fetch GPS streams (normal) or save pending preview tracks."""
+        if self._pending_tracks is not None:
+            self._save_tracks(self._pending_tracks)
+            self._exit_preview_mode()
+            return
+
         activities = self.activity_list.get_selected_activities()
         if not activities:
             return
@@ -614,7 +653,10 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.update_status(f"Fetching GPS streams for {len(activities)} activit{'y' if len(activities) == 1 else 'ies'}...", "working")
+        n = len(activities)
+        self.update_status(
+            f"Fetching GPS streams for {n} activit{'y' if n == 1 else 'ies'}...", "working"
+        )
 
         self.stream_worker = StreamFetchWorker(self.api_client, activities)
         self.stream_worker.progress.connect(self.update_progress)
@@ -623,14 +665,18 @@ class MainWindow(QMainWindow):
         self.stream_worker.start()
 
     def on_streams_fetched(self, tracks: List[Track]):
-        """Handle fetched GPS streams — prompt for save path and write GPX."""
+        """Show preview on map; user confirms before the file dialog opens."""
         self.progress_bar.setVisible(False)
-        self._update_export_button_state()
 
         if not tracks:
             self.update_status("No GPS tracks found in selection (indoor activities?)", "error")
+            self._update_export_button_state()
             return
 
+        self._enter_preview_mode(tracks)
+
+    def _save_tracks(self, tracks: List[Track]) -> None:
+        """Open file dialog and write tracks to GPX."""
         path, _ = QFileDialog.getSaveFileName(
             self, "Export GPX", "", "GPX Files (*.gpx)"
         )
@@ -641,7 +687,7 @@ class MainWindow(QMainWindow):
         if not path.endswith(".gpx"):
             path += ".gpx"
 
-        gpx = GPXProcessor.merge(tracks)
+        gpx = GPXProcessor.merge(tracks, self.export_options.current_options())
         warnings = GPXProcessor.validate(gpx)
         GPXProcessor.save(gpx, path)
 
