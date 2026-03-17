@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import timezone
-from typing import List
+from typing import Dict, List
 
 import gpxpy
 import gpxpy.gpx
@@ -90,6 +90,62 @@ class GPXProcessor:
             elevation=elevation,
             time=time,
         )
+
+    @staticmethod
+    def merge_with_segments(
+        tracks: List[Track],
+        project_items,          # List[ProjectItem] — avoid circular import
+        options: "ExportOptions | None" = None,
+    ) -> gpxpy.gpx.GPX:
+        """Build a GPX document respecting project item order (activities + segments).
+
+        Activity items are matched to their corresponding Track by activity_id.
+        Segment items produce a great-circle arc track (50 points, no timestamps).
+
+        Args:
+            tracks: Full-resolution GPS tracks, keyed by activity_id.
+            project_items: Ordered list of ProjectItem from the open project.
+            options: Export settings.
+        """
+        from src.models.great_circle import great_circle_points
+
+        if options is None:
+            options = ExportOptions()
+
+        gpx = gpxpy.gpx.GPX()
+        gpx.creator = "GetTracks"
+
+        track_map: Dict[int, Track] = {t.activity_id: t for t in tracks}
+
+        for item in project_items:
+            if item.item_type == "activity":
+                t = track_map.get(item.activity_id)
+                if t is None:
+                    continue
+                gpx_track = gpxpy.gpx.GPXTrack(name=t.activity_name)
+                seg = gpxpy.gpx.GPXTrackSegment()
+                for pt in t.points:
+                    seg.points.append(GPXProcessor._make_point(pt, options))
+                gpx_track.segments.append(seg)
+                gpx.tracks.append(gpx_track)
+
+            elif item.item_type == "segment" and item.segment is not None:
+                s = item.segment
+                coords = great_circle_points(
+                    s.start.lat, s.start.lon, s.end.lat, s.end.lon
+                )
+                label = s.label or s.segment_type
+                gpx_track = gpxpy.gpx.GPXTrack(name=label)
+                gpx_track.type = s.segment_type
+                seg = gpxpy.gpx.GPXTrackSegment()
+                for lat, lon in coords:
+                    seg.points.append(gpxpy.gpx.GPXTrackPoint(
+                        latitude=lat, longitude=lon
+                    ))
+                gpx_track.segments.append(seg)
+                gpx.tracks.append(gpx_track)
+
+        return gpx
 
     @staticmethod
     def save(gpx: gpxpy.gpx.GPX, path: str) -> None:
