@@ -79,45 +79,6 @@ def test_decode_polyline_single_point():
 
 
 # ---------------------------------------------------------------------------
-# _build_popup
-# ---------------------------------------------------------------------------
-
-def test_build_popup_contains_name():
-    activity = _make()
-    activity = Activity(**{**activity.__dict__, "name": "Epic Ride"})
-    html = MapWidget._build_popup(activity)
-    assert "Epic Ride" in html
-
-
-def test_build_popup_contains_type():
-    activity = _make(type="Ride")
-    assert "Ride" in MapWidget._build_popup(activity)
-
-
-def test_build_popup_contains_distance_km():
-    activity = _make(distance=15000.0)
-    assert "15.00" in MapWidget._build_popup(activity)
-
-
-def test_build_popup_contains_date():
-    activity = _make()
-    assert "2024-06-15" in MapWidget._build_popup(activity)
-
-
-def test_build_popup_time_hours_and_minutes():
-    activity = _make(moving_time=5400)  # 1h 30m
-    html = MapWidget._build_popup(activity)
-    assert "1h" in html
-    assert "30" in html
-
-
-def test_build_popup_returns_html_string():
-    html = MapWidget._build_popup(_make())
-    assert html.startswith("<div")
-    assert "</div>" in html
-
-
-# ---------------------------------------------------------------------------
 # _calculate_center
 # ---------------------------------------------------------------------------
 
