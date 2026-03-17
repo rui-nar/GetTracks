@@ -7,18 +7,19 @@ from typing import Optional, List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QPushButton, QProgressBar,
-    QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog
+    QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor, QPainter
+from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QColor, QPainter
 
-from src.cache.activity_cache import ActivityCache
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI
 from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
+from src.models.project import Project, ProjectItem
 from src.models.track import Track, TrackPoint
 from src.gpx.processor import GPXProcessor
+from src.project.project_manager import ProjectManager
 from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.splash import make_splash
@@ -27,54 +28,46 @@ from src.gui.export_options_widget import ExportOptionsWidget
 from src.gui.stats_bar import StatsBarWidget
 from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
+from src.gui.project_list_widget import ProjectListWidget
+from src.gui.connecting_segment_dialog import ConnectingSegmentDialog
 from src.filters.filter_engine import FilterCriteria, FilterEngine
 
 
 class ActivityListWidget(QListWidget):
-    """Widget for displaying list of activities."""
+    """Legacy activity list widget — kept for backward compatibility."""
 
     activity_selected = pyqtSignal(Activity)
 
     def __init__(self):
         super().__init__()
         self.activities: List[Activity] = []
-        self.setup_ui()
-        self.itemClicked.connect(self.on_item_clicked)
-
-    def setup_ui(self):
-        """Set up the UI components."""
         self.setMinimumWidth(300)
         self.setAlternatingRowColors(True)
         self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.itemClicked.connect(self._on_item_clicked)
 
     def set_activities(self, activities: List[Activity]):
-        """Set the list of activities to display."""
         self.clear()
         self.activities = activities
-
         for activity in activities:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, activity)
-
-            # Format activity display text
             distance_km = activity.distance / 1000
-            display_text = f"{activity.name}\n"
-            display_text += f"{activity.type} • {distance_km:.1f} km • "
-            display_text += f"{activity.start_date_local.strftime('%Y-%m-%d %H:%M')}"
-
+            display_text = (
+                f"{activity.name}\n"
+                f"{activity.type} • {distance_km:.1f} km • "
+                f"{activity.start_date_local.strftime('%Y-%m-%d %H:%M')}"
+            )
             item.setText(display_text)
             self.addItem(item)
 
-    def on_item_clicked(self, item: QListWidgetItem):
-        """Handle activity selection."""
+    def _on_item_clicked(self, item: QListWidgetItem):
         activity = item.data(Qt.ItemDataRole.UserRole)
         if activity:
             self.activity_selected.emit(activity)
 
     def get_selected_activities(self) -> List[Activity]:
-        """Get currently selected activities."""
-        selected_items = self.selectedItems()
-        return [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+        return [item.data(Qt.ItemDataRole.UserRole) for item in self.selectedItems()]
 
 
 class ActivityDetailsWidget(QWidget):
@@ -328,12 +321,12 @@ class MainWindow(QMainWindow):
         self.config = config
         self.api_client = StravaAPI(config)
         self.logger = setup_logging(__name__)
-        self._all_activities: List[Activity] = []
         self._filter_engine = FilterEngine()
         self._pending_tracks: Optional[List[Track]] = None  # set during export preview
-        self._cache = ActivityCache(config.get("app.cache_dir", "cache"))
+        self._project_manager = ProjectManager(self)
 
         self.setup_ui()
+        self._build_menu()
         self.connect_signals()
         self._toasts = ToastManager(self)
         self._restore_session()
@@ -412,9 +405,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         left_layout.addWidget(self.progress_bar)
 
-        # Activity list
-        self.activity_list = ActivityListWidget()
-        left_layout.addWidget(self.activity_list)
+        # Project item list (replaces flat ActivityListWidget)
+        self.project_list = ProjectListWidget()
+        left_layout.addWidget(self.project_list)
 
         # Stats bar at the bottom of the left panel
         self.stats_bar = StatsBarWidget()
@@ -457,6 +450,233 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_toasts"):
             self._toasts.restack()
 
+    def closeEvent(self, event):
+        """Guard against closing with unsaved changes."""
+        if self._project_manager.is_dirty:
+            reply = QMessageBox.question(
+                self, "Unsaved changes",
+                "The current project has unsaved changes. Save before closing?",
+                QMessageBox.StandardButton.Save |
+                QMessageBox.StandardButton.Discard |
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Save:
+                if not self._project_manager.save():
+                    self._file_save_as()
+                event.accept()
+            elif reply == QMessageBox.StandardButton.Discard:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
+
+    # ------------------------------------------------------------------
+    # Menu bar
+    # ------------------------------------------------------------------
+
+    def _build_menu(self) -> None:
+        mb = self.menuBar()
+        file_menu = mb.addMenu("&File")
+
+        act_new = QAction("&New Project\tCtrl+N", self)
+        act_new.setShortcut("Ctrl+N")
+        act_new.triggered.connect(self._file_new)
+        file_menu.addAction(act_new)
+
+        act_open = QAction("&Open Project…\tCtrl+O", self)
+        act_open.setShortcut("Ctrl+O")
+        act_open.triggered.connect(self._file_open)
+        file_menu.addAction(act_open)
+
+        act_close = QAction("&Close Project", self)
+        act_close.triggered.connect(self._file_close)
+        file_menu.addAction(act_close)
+
+        file_menu.addSeparator()
+
+        act_save = QAction("&Save\tCtrl+S", self)
+        act_save.setShortcut("Ctrl+S")
+        act_save.triggered.connect(self._file_save)
+        file_menu.addAction(act_save)
+
+        act_save_as = QAction("Save &As…", self)
+        act_save_as.triggered.connect(self._file_save_as)
+        file_menu.addAction(act_save_as)
+
+    # ------------------------------------------------------------------
+    # File menu handlers
+    # ------------------------------------------------------------------
+
+    def _file_new(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+        name, ok = QInputDialog.getText(self, "New Project", "Project name:")
+        if not ok or not name.strip():
+            return
+        project = self._project_manager.new_project(name.strip())
+        self.config.set("app.last_project_path", None)
+        self._on_project_changed(project)
+
+    def _file_open(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project", "", "GetTracks Project (*.gettracks)"
+        )
+        if not path:
+            return
+        try:
+            project = self._project_manager.open_project(path)
+            self.config.set("app.last_project_path", path)
+            self.config.save()
+            self._on_project_changed(project)
+        except Exception as e:
+            QMessageBox.critical(self, "Open failed", str(e))
+
+    def _file_close(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+        self._project_manager.close_project()
+        self.config.set("app.last_project_path", None)
+        self.config.save()
+
+    def _file_save(self) -> None:
+        if not self._project_manager.save():
+            self._file_save_as()
+
+    def _file_save_as(self) -> None:
+        if not self._project_manager.has_project:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project As", "", "GetTracks Project (*.gettracks)"
+        )
+        if not path:
+            return
+        if not path.endswith(".gettracks"):
+            path += ".gettracks"
+        self._project_manager.save_as(path)
+        self.config.set("app.last_project_path", path)
+        self.config.save()
+
+    def _confirm_discard_changes(self) -> bool:
+        """Return True if it's safe to proceed (changes saved or discarded)."""
+        if not self._project_manager.is_dirty:
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved changes",
+            "The current project has unsaved changes. Discard them?",
+            QMessageBox.StandardButton.Save |
+            QMessageBox.StandardButton.Discard |
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Save:
+            if not self._project_manager.save():
+                self._file_save_as()
+            return True
+        return reply == QMessageBox.StandardButton.Discard
+
+    # ------------------------------------------------------------------
+    # Project signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_project_changed(self, project: Optional[Project]) -> None:
+        """Called when a project is opened, created, or closed."""
+        self._update_title()
+        self.project_list.set_project(project)
+        if project:
+            # Pre-populate filter widget from saved state
+            self.filter_widget.populate_types(project.activities)
+            self.stats_bar.update_stats(project.activities)
+            if project.activities:
+                self.map_widget.setVisible(True)
+                self.map_widget.display_project(project)
+            else:
+                self.map_widget.setVisible(False)
+            self.fetch_button.setEnabled(True)
+            self.select_all_button.setEnabled(bool(project.items))
+            self.clear_selection_button.setEnabled(bool(project.items))
+        else:
+            self.map_widget.setVisible(False)
+            self.stats_bar.update_stats([])
+            self.fetch_button.setEnabled(False)
+            self.select_all_button.setEnabled(False)
+            self.clear_selection_button.setEnabled(False)
+
+    def _on_dirty_changed(self, dirty: bool) -> None:
+        self._update_title()
+
+    def _update_title(self) -> None:
+        project = self._project_manager.project
+        if project:
+            dirty_marker = "*" if self._project_manager.is_dirty else ""
+            self.setWindowTitle(f"GetTracks — {project.name}{dirty_marker}")
+        else:
+            self.setWindowTitle("GetTracks")
+
+    # ------------------------------------------------------------------
+    # Project list signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_item_reordered(self, from_idx: int, to_idx: int) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        if from_idx >= 0 and to_idx >= 0:
+            project.move_item(from_idx, to_idx)
+        self._project_manager.mark_dirty()
+        self.map_widget.display_project(project)
+
+    def _on_item_selected(self, item: ProjectItem) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        if item.item_type == "activity":
+            activity = project.activity_by_id(item.activity_id)
+            if activity:
+                self.on_activity_selected(activity)
+        elif item.item_type == "segment" and item.segment:
+            self.elevation_chart.setVisible(False)
+            self.map_widget.setVisible(True)
+            self.map_widget.display_project(project)
+
+    def _on_insert_segment_requested(self, index: int) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+
+        # Find adjacent activities for auto-fill
+        prev_act, next_act = None, None
+        act_map = {a.id: a for a in project.activities}
+        for i, it in enumerate(project.items):
+            if it.item_type == "activity":
+                act = act_map.get(it.activity_id)
+                if i < index:
+                    prev_act = act
+                elif i >= index and next_act is None:
+                    next_act = act
+
+        dlg = ConnectingSegmentDialog(self, prev_activity=prev_act, next_activity=next_act)
+        if dlg.exec() != ConnectingSegmentDialog.DialogCode.Accepted:
+            return
+
+        seg = dlg.result_segment()
+        project.items.insert(index, ProjectItem(item_type="segment", segment=seg))
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+
+    def _on_remove_item_requested(self, index: int) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        project.remove_item(index)
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        if project.items:
+            self.map_widget.display_project(project)
+
     def connect_signals(self):
         """Connect UI signals to handlers."""
         self.auth_button.clicked.connect(self.authenticate)
@@ -464,39 +684,48 @@ class MainWindow(QMainWindow):
         self.select_all_button.clicked.connect(self.select_all_activities)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.export_button.clicked.connect(self.on_export_selected)
-        self.activity_list.activity_selected.connect(self.on_activity_selected)
-        self.activity_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.filter_widget.filters_changed.connect(self._on_filters_changed)
 
+        # Project manager signals
+        self._project_manager.project_changed.connect(self._on_project_changed)
+        self._project_manager.dirty_changed.connect(self._on_dirty_changed)
+
+        # Project list signals
+        self.project_list.item_reordered.connect(self._on_item_reordered)
+        self.project_list.item_selected.connect(self._on_item_selected)
+        self.project_list.insert_segment_requested.connect(self._on_insert_segment_requested)
+        self.project_list.remove_item_requested.connect(self._on_remove_item_requested)
+
     def _restore_session(self) -> None:
-        """Restore UI state from keyring token and on-disk activity cache."""
+        """Restore auth token and last open project."""
         if self.api_client.token_data:
             self.auth_button.setText("✓ Connected")
             self.update_status("Session restored — click 'Fetch Activities' to continue", "success")
             self.show_toast("Previous session restored", "success", duration_ms=3000)
 
-        # Load cached activities immediately so the UI is populated without a network call
-        cached = self._cache.load()
-        if cached:
-            self._all_activities = cached
-            self.filter_widget.populate_types(cached)
-            self.activity_list.set_activities(cached)
-            self.select_all_button.setEnabled(True)
-            self.clear_selection_button.setEnabled(True)
-            self.stats_bar.update_stats(cached)
-            self.map_widget.setVisible(True)
-            self.map_widget.display_activities(cached)
-            last = self._cache.last_sync()
-            last_str = last.strftime("%Y-%m-%d %H:%M") if last else "unknown"
-            self.update_status(
-                f"Loaded {len(cached)} cached activities (last sync: {last_str})", "info"
-            )
-            self._update_fetch_button_label()
+        last_path = self.config.get("app.last_project_path")
+        if last_path and os.path.exists(last_path):
+            try:
+                project = self._project_manager.open_project(last_path)
+                self.update_status(
+                    f"Opened project '{project.name}' ({len(project.activities)} activities)", "info"
+                )
+                return
+            except Exception as e:
+                self.logger.warning(f"Could not restore last project: {e}")
+
+        # No project: create a default one so the UI is functional
+        # new_project already calls _set_dirty(False), so nothing extra needed
+        self._project_manager.new_project("My Activities")
 
     def _update_fetch_button_label(self) -> None:
-        """Show 'Sync New' when cache is populated, 'Fetch Activities' otherwise."""
-        if self._cache.count() > 0:
-            most_recent = self._cache.most_recent_start()
+        """Show 'Sync New' when project has activities, 'Fetch Activities' otherwise."""
+        project = self._project_manager.project
+        if project and project.activities:
+            most_recent = max(
+                (a.start_date for a in project.activities if a.start_date),
+                default=None,
+            )
             label = "Sync New Activities"
             if most_recent:
                 label += f" (since {most_recent.strftime('%Y-%m-%d')})"
@@ -508,7 +737,7 @@ class MainWindow(QMainWindow):
         """Show a floating toast notification."""
         self._toasts.show(message, level, duration_ms)
 
-    def on_activity_selected(self, activity: Activity):
+    def on_activity_selected(self, activity: Activity) -> None:
         """Handle activity selection — update details, map, and elevation chart."""
         self.activity_details.set_activity(activity)
         self.map_widget.setVisible(True)
@@ -574,10 +803,18 @@ class MainWindow(QMainWindow):
         self.show_toast(f"Authentication failed: {error_msg}", "error", duration_ms=6000)
 
     def fetch_activities(self):
-        """Fetch from Strava: incremental sync if cache populated, full fetch otherwise."""
+        """Fetch from Strava: incremental sync if project has activities, else full fetch."""
         self.logger.info("Starting activity fetch")
+        project = self._project_manager.project
+        if project is None:
+            return
 
-        after_date = self._cache.most_recent_start() if self._cache.count() > 0 else None
+        after_date: Optional[datetime] = None
+        if project.activities:
+            after_date = max(
+                (a.start_date for a in project.activities if a.start_date),
+                default=None,
+            )
 
         self.fetch_button.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -646,15 +883,28 @@ class MainWindow(QMainWindow):
         return pixmap
 
     def on_activities_fetched(self, activities: List[Activity]):
-        """Merge new activities into cache, refresh the UI."""
+        """Merge new activities into the project, refresh the UI."""
         self.logger.info(f"Fetched {len(activities)} activities from Strava")
+        project = self._project_manager.project
+        if project is None:
+            return
 
-        # Merge into cache; combined list is deduplicated and sorted newest-first
-        combined = self._cache.merge(activities)
-        new_count = len(activities)
-        total = len(combined)
+        existing_ids = {a.id for a in project.activities}
+        new_activities = [a for a in activities if a.id not in existing_ids]
+        project.add_activities(activities)  # deduplicates internally
 
-        self._all_activities = combined
+        # Append new activities as project items (date-sorted)
+        new_activities_sorted = sorted(
+            new_activities, key=lambda a: a.start_date or datetime.min
+        )
+        for act in new_activities_sorted:
+            project.items.append(ProjectItem(item_type="activity", activity_id=act.id))
+
+        new_count = len(new_activities)
+        total = len(project.activities)
+
+        if new_count:
+            self._project_manager.mark_dirty()
 
         self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -662,33 +912,36 @@ class MainWindow(QMainWindow):
         if new_count:
             msg = f"Synced {new_count} new activit{'y' if new_count == 1 else 'ies'} — {total} total"
         else:
-            msg = f"No new activities — {total} total in cache"
+            msg = f"No new activities — {total} total in project"
         self.update_status(msg, "success")
         self.show_toast(msg, "success", duration_ms=3000)
 
         self._update_fetch_button_label()
         self.select_all_button.setEnabled(True)
         self.clear_selection_button.setEnabled(True)
-        self.filter_widget.populate_types(combined)
-        self.activity_list.set_activities(combined)
-        self.stats_bar.update_stats(combined)
+        self.filter_widget.populate_types(project.activities)
+        self.project_list.refresh()
+        self.stats_bar.update_stats(project.activities)
         self.map_widget.setVisible(True)
-        self.map_widget.display_activities(combined)
+        self.map_widget.display_project(project)
 
     def _on_filters_changed(self, criteria: FilterCriteria) -> None:
-        """Apply filters and refresh the activity list and map."""
-        filtered = self._filter_engine.apply(self._all_activities, criteria)
-        self.activity_list.set_activities(filtered)
+        """Persist filter state to project and refresh stats."""
+        project = self._project_manager.project
+        if project is None:
+            return
+        # Persist to project filter state
+        project.filter_state.start_date = criteria.start_date.isoformat() if criteria.start_date else None
+        project.filter_state.end_date = criteria.end_date.isoformat() if criteria.end_date else None
+        project.filter_state.activity_types = list(criteria.activity_types) if criteria.activity_types else None
+        self._project_manager.mark_dirty()
+
+        filtered = self._filter_engine.apply(project.activities, criteria)
         self.stats_bar.update_stats(filtered)
         self.update_status(
-            f"Showing {len(filtered)} of {len(self._all_activities)} activities",
+            f"Filter active — {len(filtered)} of {len(project.activities)} activities match",
             "info",
         )
-        if filtered:
-            self.map_widget.setVisible(True)
-            self.map_widget.display_activities(filtered)
-        else:
-            self.map_widget.setVisible(False)
 
     def on_fetch_error(self, error_msg: str):
         """Handle fetch error."""
@@ -710,12 +963,12 @@ class MainWindow(QMainWindow):
             self.show_toast(f"Fetch error: {error_msg}", "error", duration_ms=6000)
 
     def select_all_activities(self):
-        """Select all activities in the list."""
-        self.activity_list.selectAll()
+        """Select all items in the project list."""
+        self.project_list._list.selectAll()
 
     def clear_selection(self):
-        """Clear all activity selections."""
-        self.activity_list.clearSelection()
+        """Clear all selections."""
+        self.project_list._list.clearSelection()
 
     def _update_export_button_state(self):
         """Enable/label export button based on selection and preview state."""
@@ -724,7 +977,8 @@ class MainWindow(QMainWindow):
             self.export_button.setEnabled(True)
         else:
             self.export_button.setText("Visualise Selection")
-            self.export_button.setEnabled(len(self.activity_list.selectedItems()) > 0)
+            has_sel = len(self.project_list._list.selectedItems()) > 0
+            self.export_button.setEnabled(has_sel)
 
     def _on_selection_changed(self):
         """Exit preview mode if the user changes their selection."""
@@ -756,19 +1010,33 @@ class MainWindow(QMainWindow):
             self._exit_preview_mode()
             return
 
-        activities = self.activity_list.get_selected_activities()
-        if not activities:
+        project = self._project_manager.project
+        if project is None:
+            return
+
+        # Collect selected activity items
+        act_map = {a.id: a for a in project.activities}
+        selected_activities: List[Activity] = []
+        for wi in self.project_list._list.selectedItems():
+            from PyQt6.QtCore import Qt
+            item = wi.data(Qt.ItemDataRole.UserRole)
+            if item and item.item_type == "activity":
+                act = act_map.get(item.activity_id)
+                if act:
+                    selected_activities.append(act)
+
+        if not selected_activities:
             return
 
         self.export_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        n = len(activities)
+        n = len(selected_activities)
         self.update_status(
             f"Fetching GPS streams for {n} activit{'y' if n == 1 else 'ies'}...", "working"
         )
 
-        self.stream_worker = StreamFetchWorker(self.api_client, activities)
+        self.stream_worker = StreamFetchWorker(self.api_client, selected_activities)
         self.stream_worker.progress.connect(self.update_progress)
         self.stream_worker.finished.connect(self.on_streams_fetched)
         self.stream_worker.error.connect(self.on_fetch_error)
@@ -801,8 +1069,7 @@ class MainWindow(QMainWindow):
         warnings = GPXProcessor.validate(gpx)
         GPXProcessor.save(gpx, path)
 
-        selected = self.activity_list.get_selected_activities()
-        skipped = len(selected) - len(tracks)
+        skipped = 0
         msg = f"Exported {len(tracks)} track(s) to {os.path.basename(path)}"
         if skipped:
             msg += f" ({skipped} indoor/no-GPS activit{'y' if skipped == 1 else 'ies'} skipped)"
