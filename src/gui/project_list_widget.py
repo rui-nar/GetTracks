@@ -69,7 +69,8 @@ class _ItemDelegate(QStyledItemDelegate):
         rect = option.rect
 
         # Selection highlight
-        if option.state & 0x0002:  # QStyle.StateFlag.State_Selected
+        from PyQt6.QtWidgets import QStyle
+        if option.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(rect, QColor("#cce0ff"))
         elif item.item_type == "segment":
             painter.fillRect(rect, _SEGMENT_BG)

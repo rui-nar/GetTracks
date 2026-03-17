@@ -14,7 +14,6 @@ from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QColor, QPainter
 
 from src.config.settings import Config
 from src.api.strava_client import StravaAPI
-from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
 from src.models.project import Project, ProjectItem
 from src.models.track import Track, TrackPoint
@@ -23,14 +22,15 @@ from src.project.project_manager import ProjectManager
 from src.visualization.map_widget import MapWidget
 from src.utils.logging import setup_logging
 from src.gui.splash import make_splash
-from src.gui.filter_widget import FilterWidget
+from src.gui.strava_import_dialog import StravaImportDialog
+from src.gui.gpx_import import import_gpx_file
 from src.gui.export_options_widget import ExportOptionsWidget
 from src.gui.stats_bar import StatsBarWidget
 from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
 from src.gui.project_list_widget import ProjectListWidget
 from src.gui.connecting_segment_dialog import ConnectingSegmentDialog
-from src.filters.filter_engine import FilterCriteria, FilterEngine
+from src.gui.workers import StreamFetchWorker, ElevationFetchWorker
 
 
 class ActivityListWidget(QListWidget):
@@ -127,190 +127,8 @@ class ActivityDetailsWidget(QWidget):
         self.details_text.setHtml(details)
 
 
-class FetchActivitiesWorker(QThread):
-    """Worker thread for fetching activities from Strava.
-
-    When *after_date* is provided the worker performs an incremental sync,
-    fetching only activities that started after that UTC datetime (up to
-    200 per page).  Otherwise it fetches the 50 most recent activities.
-    """
-
-    finished = pyqtSignal(list)  # List[Activity]
-    error = pyqtSignal(str)
-    progress = pyqtSignal(str)
-
-    def __init__(self, api_client: StravaAPI, after_date=None):
-        super().__init__()
-        self.api_client = api_client
-        self.after_date = after_date  # Optional[datetime]
-
-    def run(self):
-        """Fetch activities in background thread."""
-        try:
-            if self.after_date is not None:
-                self.progress.emit("Syncing new activities from Strava...")
-                after_ts = int(self.after_date.timestamp())
-                activities_data = self.api_client.get_activities(
-                    after=after_ts, per_page=200
-                )
-            else:
-                self.progress.emit("Connecting to Strava...")
-                activities_data = self.api_client.get_activities(per_page=50)
-
-            self.progress.emit("Converting data...")
-            activities = [Activity.from_strava_api(act) for act in activities_data]
-            self.finished.emit(activities)
-
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class OAuthAuthenticationWorker(QThread):
-    """Worker thread for handling OAuth authentication."""
-
-    finished = pyqtSignal(dict)  # token_data
-    error = pyqtSignal(str)
-    progress = pyqtSignal(str)
-
-    def __init__(self, api_client: StravaAPI):
-        super().__init__()
-        self.api_client = api_client
-
-    def run(self):
-        """Handle OAuth authentication flow."""
-        import webbrowser
-        
-        try:
-            self.progress.emit("Starting authentication...")
-            
-            # Start the callback server
-            callback_server = OAuthCallbackServer(port=8000)
-            callback_server.start()
-            self.progress.emit("Opening browser for authentication...")
-            
-            # Open browser to authorization URL
-            auth_url = self.api_client.oauth.authorization_url()
-            webbrowser.open(auth_url)
-            
-            # Wait for callback
-            self.progress.emit("Waiting for authorization...")
-            auth_code = callback_server.wait_for_callback(timeout=300)
-            callback_server.stop()
-            
-            if not auth_code:
-                raise Exception("Authorization timeout - please try again")
-            
-            # Exchange code for token
-            self.progress.emit("Exchanging authorization code for token...")
-            token_data = self.api_client.oauth.exchange_code(auth_code)
-            
-            # Store token
-            self.progress.emit("Storing token...")
-            self.api_client.set_token(token_data)
-            
-            self.finished.emit(token_data)
-            
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class StreamFetchWorker(QThread):
-    """Fetch full-resolution GPS streams for a list of activities."""
-
-    finished = pyqtSignal(list)   # List[Track]
-    error = pyqtSignal(str)
-    progress = pyqtSignal(str)
-
-    def __init__(self, api_client: StravaAPI, activities: List[Activity]):
-        super().__init__()
-        self.api_client = api_client
-        self.activities = activities
-
-    def run(self):
-        tracks: List[Track] = []
-        skipped = 0
-
-        for i, activity in enumerate(self.activities, 1):
-            self.progress.emit(
-                f"Fetching streams {i}/{len(self.activities)}: {activity.name}"
-            )
-
-            if not activity.start_latlng:
-                skipped += 1
-                continue
-
-            try:
-                streams = self.api_client.get_activity_streams(activity.id)
-            except Exception as e:
-                self.error.emit(
-                    f"Failed to fetch streams for '{activity.name}': {e}"
-                )
-                return
-
-            latlng_data = streams.get("latlng", {}).get("data", [])
-            if not latlng_data:
-                skipped += 1
-                continue
-
-            altitude_data = streams.get("altitude", {}).get("data", [])
-            time_data = streams.get("time", {}).get("data", [])   # seconds from start
-
-            # Build absolute UTC timestamps from elapsed-second offsets
-            start_utc = activity.start_date
-            if start_utc.tzinfo is None:
-                start_utc = start_utc.replace(tzinfo=timezone.utc)
-
-            points: List[TrackPoint] = []
-            for j, (lat, lon) in enumerate(latlng_data):
-                elevation = altitude_data[j] if j < len(altitude_data) else None
-                time = (
-                    start_utc + timedelta(seconds=time_data[j])
-                    if j < len(time_data)
-                    else None
-                )
-                points.append(TrackPoint(lat=lat, lon=lon,
-                                         elevation=elevation, time=time))
-
-            tracks.append(Track(
-                activity_id=activity.id,
-                activity_name=activity.name,
-                start_time=start_utc,
-                points=points,
-            ))
-
-        if skipped:
-            self.progress.emit(
-                f"Done — {skipped} indoor/no-GPS activit{'y' if skipped == 1 else 'ies'} skipped"
-            )
-        self.finished.emit(tracks)
-
-
-class ElevationFetchWorker(QThread):
-    """Fetch altitude + distance streams for a single activity."""
-
-    finished = pyqtSignal(list, list)   # distances_km, elevations_m
-    error = pyqtSignal(str)
-
-    def __init__(self, api_client: StravaAPI, activity_id: int) -> None:
-        super().__init__()
-        self.api_client = api_client
-        self.activity_id = activity_id
-
-    def run(self) -> None:
-        try:
-            streams = self.api_client.get_activity_streams(self.activity_id)
-            alt = streams.get("altitude", {}).get("data", [])
-            dist = streams.get("distance", {}).get("data", [])
-            if alt and dist:
-                n = min(len(alt), len(dist))
-                self.finished.emit(
-                    [d / 1000 for d in dist[:n]],
-                    list(alt[:n]),
-                )
-            else:
-                self.finished.emit([], [])
-        except Exception as e:
-            self.error.emit(str(e))
+# Workers are imported from src.gui.workers (FetchActivitiesWorker,
+# OAuthAuthenticationWorker, StreamFetchWorker, ElevationFetchWorker)
 
 
 class MainWindow(QMainWindow):
@@ -321,7 +139,6 @@ class MainWindow(QMainWindow):
         self.config = config
         self.api_client = StravaAPI(config)
         self.logger = setup_logging(__name__)
-        self._filter_engine = FilterEngine()
         self._pending_tracks: Optional[List[Track]] = None  # set during export preview
         self._project_manager = ProjectManager(self)
 
@@ -367,14 +184,6 @@ class MainWindow(QMainWindow):
         # Control buttons
         button_layout = QHBoxLayout()
 
-        self.auth_button = QPushButton("Authenticate with Strava")
-        self.auth_button.setMinimumHeight(35)
-        button_layout.addWidget(self.auth_button)
-
-        self.fetch_button = QPushButton("Fetch Activities")
-        self.fetch_button.setMinimumHeight(35)
-        button_layout.addWidget(self.fetch_button)
-
         self.select_all_button = QPushButton("Select All")
         self.select_all_button.setEnabled(False)
         button_layout.addWidget(self.select_all_button)
@@ -391,10 +200,6 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.export_button)
 
         left_layout.addLayout(button_layout)
-
-        # Filter widget
-        self.filter_widget = FilterWidget()
-        left_layout.addWidget(self.filter_widget)
 
         # Export options
         self.export_options = ExportOptionsWidget()
@@ -504,6 +309,17 @@ class MainWindow(QMainWindow):
         act_save_as.triggered.connect(self._file_save_as)
         file_menu.addAction(act_save_as)
 
+        # Import menu
+        import_menu = mb.addMenu("&Import")
+
+        act_strava = QAction("From &Strava…", self)
+        act_strava.triggered.connect(self._import_from_strava)
+        import_menu.addAction(act_strava)
+
+        act_gpx = QAction("From &GPX file…", self)
+        act_gpx.triggered.connect(self._import_from_gpx)
+        import_menu.addAction(act_gpx)
+
     # ------------------------------------------------------------------
     # File menu handlers
     # ------------------------------------------------------------------
@@ -548,8 +364,10 @@ class MainWindow(QMainWindow):
     def _file_save_as(self) -> None:
         if not self._project_manager.has_project:
             return
+        project = self._project_manager.project
+        default_name = (project.name if project else "") + ".gettracks"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "GetTracks Project (*.gettracks)"
+            self, "Save Project As", default_name, "GetTracks Project (*.gettracks)"
         )
         if not path:
             return
@@ -558,6 +376,58 @@ class MainWindow(QMainWindow):
         self._project_manager.save_as(path)
         self.config.set("app.last_project_path", path)
         self.config.save()
+
+    # ------------------------------------------------------------------
+    # Import menu handlers
+    # ------------------------------------------------------------------
+
+    def _import_from_strava(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        dlg = StravaImportDialog(project, self.api_client, self)
+        dlg.import_complete.connect(self._on_strava_import_complete)
+        dlg.exec()
+
+    def _on_strava_import_complete(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        self.stats_bar.update_stats(project.activities)
+        self.select_all_button.setEnabled(bool(project.items))
+        self.clear_selection_button.setEnabled(bool(project.items))
+        if project.items:
+            self.map_widget.setVisible(True)
+            self.map_widget.display_project(project)
+
+    def _import_from_gpx(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import GPX file", "", "GPX Files (*.gpx)"
+        )
+        if not path:
+            return
+        activities = import_gpx_file(path)
+        if not activities:
+            self.show_toast(f"No tracks found in {os.path.basename(path)}", "warning")
+            return
+        project.add_activities(activities)
+        for act in activities:
+            project.items.append(ProjectItem(item_type="activity", activity_id=act.id))
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        self.stats_bar.update_stats(project.activities)
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+        n = len(activities)
+        self.show_toast(
+            f"Imported {n} track{'s' if n != 1 else ''} from {os.path.basename(path)}",
+            "success",
+        )
 
     def _confirm_discard_changes(self) -> bool:
         """Return True if it's safe to proceed (changes saved or discarded)."""
@@ -585,21 +455,17 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.project_list.set_project(project)
         if project:
-            # Pre-populate filter widget from saved state
-            self.filter_widget.populate_types(project.activities)
             self.stats_bar.update_stats(project.activities)
             if project.activities:
                 self.map_widget.setVisible(True)
                 self.map_widget.display_project(project)
             else:
                 self.map_widget.setVisible(False)
-            self.fetch_button.setEnabled(True)
             self.select_all_button.setEnabled(bool(project.items))
             self.clear_selection_button.setEnabled(bool(project.items))
         else:
             self.map_widget.setVisible(False)
             self.stats_bar.update_stats([])
-            self.fetch_button.setEnabled(False)
             self.select_all_button.setEnabled(False)
             self.clear_selection_button.setEnabled(False)
 
@@ -679,12 +545,9 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Connect UI signals to handlers."""
-        self.auth_button.clicked.connect(self.authenticate)
-        self.fetch_button.clicked.connect(self.fetch_activities)
         self.select_all_button.clicked.connect(self.select_all_activities)
         self.clear_selection_button.clicked.connect(self.clear_selection)
         self.export_button.clicked.connect(self.on_export_selected)
-        self.filter_widget.filters_changed.connect(self._on_filters_changed)
 
         # Project manager signals
         self._project_manager.project_changed.connect(self._on_project_changed)
@@ -699,8 +562,7 @@ class MainWindow(QMainWindow):
     def _restore_session(self) -> None:
         """Restore auth token and last open project."""
         if self.api_client.token_data:
-            self.auth_button.setText("✓ Connected")
-            self.update_status("Session restored — click 'Fetch Activities' to continue", "success")
+            self.update_status("Session restored", "success")
             self.show_toast("Previous session restored", "success", duration_ms=3000)
 
         last_path = self.config.get("app.last_project_path")
@@ -717,21 +579,6 @@ class MainWindow(QMainWindow):
         # No project: create a default one so the UI is functional
         # new_project already calls _set_dirty(False), so nothing extra needed
         self._project_manager.new_project("My Activities")
-
-    def _update_fetch_button_label(self) -> None:
-        """Show 'Sync New' when project has activities, 'Fetch Activities' otherwise."""
-        project = self._project_manager.project
-        if project and project.activities:
-            most_recent = max(
-                (a.start_date for a in project.activities if a.start_date),
-                default=None,
-            )
-            label = "Sync New Activities"
-            if most_recent:
-                label += f" (since {most_recent.strftime('%Y-%m-%d')})"
-            self.fetch_button.setText(label)
-        else:
-            self.fetch_button.setText("Fetch Activities")
 
     def show_toast(self, message: str, level: str = "info", duration_ms: int = 4000) -> None:
         """Show a floating toast notification."""
@@ -765,67 +612,6 @@ class MainWindow(QMainWindow):
         else:
             self.elevation_chart.clear()
             self.elevation_chart.setVisible(False)
-
-    def authenticate(self):
-        """Start authentication with Strava."""
-        self.logger.info("Starting Strava authentication")
-
-        # Update UI
-        self.auth_button.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress
-        self.update_status("Authenticating with Strava...", "working")
-
-        # Start authentication worker thread
-        self.auth_worker = OAuthAuthenticationWorker(self.api_client)
-        self.auth_worker.progress.connect(self.update_progress)
-        self.auth_worker.finished.connect(self.on_authenticated)
-        self.auth_worker.error.connect(self.on_auth_error)
-        self.auth_worker.start()
-
-    def on_authenticated(self, token_data: dict):
-        """Handle successful authentication."""
-        self.logger.info("Successfully authenticated with Strava")
-
-        self.auth_button.setEnabled(True)
-        self.auth_button.setText("✓ Connected")
-        self.progress_bar.setVisible(False)
-        self.update_status("Authenticated — click 'Fetch Activities' to load your activities.", "success")
-        self.show_toast("Successfully authenticated with Strava", "success")
-
-    def on_auth_error(self, error_msg: str):
-        """Handle authentication error."""
-        self.logger.error(f"Authentication error: {error_msg}")
-
-        self.auth_button.setEnabled(True)
-        self.progress_bar.setVisible(False)
-        self.update_status("Authentication failed", "error")
-        self.show_toast(f"Authentication failed: {error_msg}", "error", duration_ms=6000)
-
-    def fetch_activities(self):
-        """Fetch from Strava: incremental sync if project has activities, else full fetch."""
-        self.logger.info("Starting activity fetch")
-        project = self._project_manager.project
-        if project is None:
-            return
-
-        after_date: Optional[datetime] = None
-        if project.activities:
-            after_date = max(
-                (a.start_date for a in project.activities if a.start_date),
-                default=None,
-            )
-
-        self.fetch_button.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        self.update_status("Syncing activities…" if after_date else "Fetching activities…", "working")
-
-        self.worker = FetchActivitiesWorker(self.api_client, after_date=after_date)
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished.connect(self.on_activities_fetched)
-        self.worker.error.connect(self.on_fetch_error)
-        self.worker.start()
 
     def update_progress(self, message: str):
         """Update progress display."""
@@ -882,85 +668,13 @@ class MainWindow(QMainWindow):
         
         return pixmap
 
-    def on_activities_fetched(self, activities: List[Activity]):
-        """Merge new activities into the project, refresh the UI."""
-        self.logger.info(f"Fetched {len(activities)} activities from Strava")
-        project = self._project_manager.project
-        if project is None:
-            return
-
-        existing_ids = {a.id for a in project.activities}
-        new_activities = [a for a in activities if a.id not in existing_ids]
-        project.add_activities(activities)  # deduplicates internally
-
-        # Append new activities as project items (date-sorted)
-        new_activities_sorted = sorted(
-            new_activities, key=lambda a: a.start_date or datetime.min
-        )
-        for act in new_activities_sorted:
-            project.items.append(ProjectItem(item_type="activity", activity_id=act.id))
-
-        new_count = len(new_activities)
-        total = len(project.activities)
-
-        if new_count:
-            self._project_manager.mark_dirty()
-
-        self.fetch_button.setEnabled(True)
-        self.progress_bar.setVisible(False)
-
-        if new_count:
-            msg = f"Synced {new_count} new activit{'y' if new_count == 1 else 'ies'} — {total} total"
-        else:
-            msg = f"No new activities — {total} total in project"
-        self.update_status(msg, "success")
-        self.show_toast(msg, "success", duration_ms=3000)
-
-        self._update_fetch_button_label()
-        self.select_all_button.setEnabled(True)
-        self.clear_selection_button.setEnabled(True)
-        self.filter_widget.populate_types(project.activities)
-        self.project_list.refresh()
-        self.stats_bar.update_stats(project.activities)
-        self.map_widget.setVisible(True)
-        self.map_widget.display_project(project)
-
-    def _on_filters_changed(self, criteria: FilterCriteria) -> None:
-        """Persist filter state to project and refresh stats."""
-        project = self._project_manager.project
-        if project is None:
-            return
-        # Persist to project filter state
-        project.filter_state.start_date = criteria.start_date.isoformat() if criteria.start_date else None
-        project.filter_state.end_date = criteria.end_date.isoformat() if criteria.end_date else None
-        project.filter_state.activity_types = list(criteria.activity_types) if criteria.activity_types else None
-        self._project_manager.mark_dirty()
-
-        filtered = self._filter_engine.apply(project.activities, criteria)
-        self.stats_bar.update_stats(filtered)
-        self.update_status(
-            f"Filter active — {len(filtered)} of {len(project.activities)} activities match",
-            "info",
-        )
-
     def on_fetch_error(self, error_msg: str):
-        """Handle fetch error."""
+        """Handle stream-fetch error."""
         self.logger.error(f"Fetch error: {error_msg}")
-
-        self.fetch_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.update_status("Error fetching activities", "error")
 
-        if "No token data available" in error_msg or "not authenticated" in error_msg.lower():
-            self.update_status("Not authenticated — please connect with Strava first", "error")
-            self.show_toast("Please authenticate with Strava first", "warning", duration_ms=5000)
-        elif "Token refresh failed" in error_msg or "re-authenticate" in error_msg.lower():
-            # Refresh token is dead — reset the auth button so the user can re-auth
-            self.auth_button.setText("Authenticate with Strava")
-            self.update_status("Session expired — please re-authenticate", "error")
-            self.show_toast("Session expired — please re-authenticate with Strava", "error", duration_ms=6000)
-        else:
-            self.show_toast(f"Fetch error: {error_msg}", "error", duration_ms=6000)
+        self.show_toast(f"Stream fetch error: {error_msg}", "error", duration_ms=6000)
 
     def select_all_activities(self):
         """Select all items in the project list."""
