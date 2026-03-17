@@ -1,28 +1,106 @@
 # GetTracks
 
-A desktop GUI application for selecting and merging Strava activities into navigable GPS tracks.
+> Build multi-sport GPS journey files from your Strava activities — with connecting transport segments, elevation profiles, and one-click GPX export.
 
-## Purpose
+**Current release: [v1.2.0](https://github.com/rui-nar/GetTracks/releases/latest)**  ·  Windows 64-bit  ·  No installation required
 
-GetTracks allows users to connect to their Strava account, select a subset of activities based on various filters, visualize them on an interactive map, and export a merged GPX track file suitable for GPS navigation.
+---
+
+## Screenshots
+
+### Main window — project view with elevation chart
+![Main window](assets/screenshots/main_window.png)
+
+### Strava import dialog
+![Strava import](assets/screenshots/strava_import.png)
+
+### Multi-activity selection with aggregated elevation
+![Multi-select](assets/screenshots/multi_select.png)
+
+### Add Transportation segment dialog
+![Add transportation](assets/screenshots/add_transportation.png)
+
+---
+
+## What it does
+
+GetTracks lets you assemble a **project** — an ordered list of Strava activities and connecting transport legs (train, flight, boat, bus) — and export it as a single GPX file ready for a GPS device or mapping site.
+
+Typical workflow:
+1. **Add track → From Strava…** — authenticate once, fetch your activities, pick the ones you want
+2. **Add track → From GPX file…** — import locally-recorded tracks alongside Strava ones
+3. **Add track → Transportation…** — insert a great-circle arc between two activities (e.g. a train between two runs)
+4. Drag to reorder items in the project list
+5. **View Project** — instant map + elevation overview using cached data, no API call
+6. **Preview & Export** — fetch full GPS streams, preview on the map, then save as GPX
+
+---
 
 ## Features
 
-See [features.md](features.md) for detailed feature list.
+### Project system
+- Projects saved as `.gettracks` files (JSON) — reopen and continue where you left off
+- Ordered list of **activities** (Strava or GPX) and **connecting segments** (transport arcs)
+- Drag-and-drop reordering; right-click to insert or remove segments
+- Sort by date or name while preserving segment positions
 
-## Architecture
+### Map
+- Native Qt tile map (OpenStreetMap / Carto) — no browser, no WebView
+- Activity tracks rendered with per-sport colour coding
+- Connecting segments drawn as dashed great-circle arcs with transport icons
+- Multi-activity selection shows a combined map view of all selected tracks
 
-See [architecture.md](architecture.md) for technical decisions and design.
+### Elevation chart
+- Shown automatically when a project loads — no click required
+- Single activity: individual profile
+- Multi-select or full project: aggregated profile across all activities in order
+- Dynamic X-axis tick marks that adapt to total distance
+- Profiles cached on first fetch and persisted in the project file — never re-fetched
 
-## Setup
+### Import
+| Source | How |
+|---|---|
+| Strava | OAuth2, incremental sync (only fetches new activities) |
+| GPX file | Per-track import with full elevation data |
+| Transportation | Train / Flight / Ship / Bus arc between any two points |
 
-### Quick Setup (Windows)
-1. Double-click `setup.bat` to create the virtual environment and install dependencies
-2. Configure your Strava credentials in `config.json`
-3. Double-click `launch.bat` to start the application
+### Export
+- GPX with one `<trk>` per project item (activities at full resolution + transport arcs as 50-point great-circle tracks)
+- Configurable options (track name, timestamps, …)
+- Preview on map before saving
 
-### Manual Setup
+### Authentication
+- Strava token stored in `~/.config/GetTracks/tokens.json` — survives restarts
+- Auto token refresh; clear + friendly prompt on failure
+
+---
+
+## Quick start (pre-built Windows exe)
+
+1. Download `GetTracks-v1.2.0-windows.zip` from the [latest release](https://github.com/rui-nar/GetTracks/releases/latest)
+2. Extract anywhere and open the `GetTracks` folder
+3. Copy `config/config.json.example` → `config/config.json` and fill in your Strava API credentials:
+   ```json
+   {
+     "strava": {
+       "client_id": "YOUR_CLIENT_ID",
+       "client_secret": "YOUR_CLIENT_SECRET",
+       "redirect_uri": "http://localhost:8000/callback"
+     }
+   }
+   ```
+4. Run `GetTracks.exe`
+
+> **Strava API credentials** — create a free application at [strava.com/settings/api](https://www.strava.com/settings/api). Set the *Authorization Callback Domain* to `localhost`.
+
+---
+
+## Run from source
+
 ```bash
+git clone https://github.com/rui-nar/GetTracks.git
+cd GetTracks
+
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
@@ -32,47 +110,71 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
-
-### Quick Launch (Windows)
-Double-click `launch.bat` to automatically set up the environment and start the application.
-
-### Manual Launch
-To run the GUI application manually:
-
+Copy and edit the config:
 ```bash
-PYTHONPATH=src python main.py
+cp config/config.json.example config/config.json
+# fill in client_id and client_secret
 ```
 
-Or on Windows:
-
-```cmd
-set PYTHONPATH=src
+Launch:
+```bash
 python main.py
 ```
 
-This launches the PyQt6 desktop application for browsing and selecting Strava activities.
+---
 
-## Testing
+## Development
 
-Run unit tests with pytest:
+### Requirements
+- Python 3.11+
+- PyQt6, requests, gpxpy, polyline (see `requirements.txt`)
 
+### Run tests
 ```bash
 pytest
 ```
 
-All functions must have associated unit tests. No version can be released if unit tests fail.
-
-## Release
-
-Before releasing a new version, run the release script to ensure all tests pass:
-
+### Build Windows exe
 ```bash
-python release.py
+pyinstaller -y --clean GetTracks.spec
+# output: dist/GetTracks/
 ```
 
-## Development
+### Project structure
+```
+src/
+  api/          Strava API client + rate limiter
+  auth/         OAuth2 flow, token storage
+  gui/          All PyQt6 windows and widgets
+  models/       Activity, Project, ProjectItem dataclasses
+  project/      ProjectManager, ProjectIO (save/load .gettracks)
+  visualization/ MapWidget, MapCanvas, ElevationChart, transport icons
+  gpx/          GPX processor (merge + export)
+  filters/      Date / type filter engine
+```
 
-- Requires Strava API application credentials
-- Built with Python and PyQt
-- Uses Strava API v3 for activity data
+---
+
+## Changelog
+
+### v1.2.0
+- **View Project** button: instant full-project map + elevation, no API call
+- **Multi-activity selection**: combined map and aggregated elevation across selected tracks
+- Transport segments shown in Preview & Export map overlay
+- Custom silhouette icons for transport types and activity types
+- Elevation chart visible on app open (no click required)
+- Dynamic elevation chart X-axis tick marks
+- Elevation profiles persisted in project file — fetched once, never again
+- Strava token stored in `~/.config/GetTracks/tokens.json` (reliable across restarts)
+- Fixed OAuth callback on Windows 11 (IPv6/localhost issue)
+- Strava 401 auto-refresh with clear + friendly dialog message
+- Add Transportation dialog with visual icon picker and auto-fill
+
+### v1.1.0
+- Native Qt slippy map (replaces WebView)
+- Connecting transport segments with great-circle arc rendering
+- Reorderable project list with drag-and-drop
+- GPX export with segment tracks
+
+### v1.0.0
+- Initial release: Strava import, activity list, basic GPX export
