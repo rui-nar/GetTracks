@@ -318,11 +318,18 @@ class StravaImportDialog(QDialog):
 
     def _add_selected(self) -> None:
         right_ids = self._right_ids()
+        skipped = 0
         for wi in self._left_list.selectedItems():
             act: Activity = wi.data(Qt.ItemDataRole.UserRole)
             if act and act.id not in right_ids:
                 self._right_list.addItem(_make_item(act))
                 right_ids.add(act.id)
+            elif act:
+                skipped += 1
+        if skipped:
+            self._fetch_status.setText(
+                f"{skipped} activit{'y' if skipped == 1 else 'ies'} already in project — skipped"
+            )
         self._refresh_left_list()
 
     def _remove_selected(self) -> None:
@@ -387,7 +394,15 @@ class StravaImportDialog(QDialog):
     def _on_fetch_error(self, msg: str) -> None:
         self._fetch_btn.setEnabled(True)
         self._progress.setVisible(False)
-        self._fetch_status.setText(f"Error: {msg}")
+        # Show a concise, actionable message for auth failures
+        if "invalid or expired" in msg or "re-authenticate" in msg.lower() or "401" in msg:
+            self._fetch_status.setText(
+                "Token expired — click\n\"Authenticate with Strava\"\nto reconnect"
+            )
+            self._auth_btn.setEnabled(True)
+            self._auth_status.setText("Not authenticated")
+        else:
+            self._fetch_status.setText(f"Error: {msg}")
 
     # ------------------------------------------------------------------
     # Import

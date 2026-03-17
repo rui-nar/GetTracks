@@ -107,14 +107,16 @@ class StravaAPI:
         """Make an authenticated request with rate limiting and retry logic.
 
         Retry behaviour:
+          - HTTP 401: attempt one token refresh then retry; raise AuthenticationError on failure
           - HTTP 429: wait Retry-After (or 60s) then retry
           - HTTP 5xx: exponential backoff (1s, 2s, 4s) then retry
-          - HTTP 4xx (not 429): raise APIError immediately, no retry
+          - HTTP 4xx (not 401/429): raise APIError immediately, no retry
         """
         self._ensure_token()
         headers = {"Authorization": f"Bearer {self.token_data['access_token']}"}
         url = f"{self.BASE_URL}{path}"
 
+        _refreshed = False
         last_error: Optional[str] = None
         for attempt in range(max_retries):
             self._rate_limiter.acquire()
@@ -122,6 +124,25 @@ class StravaAPI:
 
             if resp.status_code < 400:
                 return resp.json()
+
+            if resp.status_code == 401:
+                if not _refreshed:
+                    # Token may have been revoked or expired early — try refresh once
+                    _refreshed = True
+                    try:
+                        self.token_data = self.oauth.refresh_token(
+                            self.token_data.get("refresh_token")
+                        )
+                        TokenStore.save_token(self.user_id, self.token_data)
+                        headers = {"Authorization": f"Bearer {self.token_data['access_token']}"}
+                        continue   # retry with new token
+                    except Exception:
+                        pass
+                self.clear_token()
+                raise AuthenticationError(
+                    "Strava access token is invalid or expired. "
+                    "Please re-authenticate via Add track → From Strava…"
+                )
 
             if resp.status_code == 429:
                 retry_after = int(resp.headers.get("Retry-After", 60))
@@ -135,7 +156,7 @@ class StravaAPI:
                 last_error = f"Server error {resp.status_code}: {resp.text}"
                 continue
 
-            # 4xx (not 429): not retryable
+            # Other 4xx: not retryable
             raise APIError(f"Strava API error {resp.status_code}: {resp.text}")
 
         raise APIError(f"Request failed after {max_retries} attempts. Last error: {last_error}")

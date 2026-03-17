@@ -1,7 +1,7 @@
 """Activity data model for Strava activities."""
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 from datetime import datetime
 
 
@@ -48,6 +48,8 @@ class Activity:
     start_latlng: Optional[List[float]] = None  # [lat, lng]
     end_latlng: Optional[List[float]] = None    # [lat, lng]
     summary_polyline: Optional[str] = None       # Google-encoded polyline
+    # Cached elevation profile — populated on first fetch and persisted in project file
+    elevation_profile: Optional[Tuple[List[float], List[float]]] = None  # (distances_km, elevations_m)
 
     def to_strava_dict(self) -> dict:
         """Serialise to a dict that can be round-tripped via from_strava_api()."""
@@ -91,6 +93,10 @@ class Activity:
             "start_latlng": self.start_latlng,
             "end_latlng": self.end_latlng,
             "map": {"summary_polyline": self.summary_polyline},
+            "elevation_profile": {
+                "distances_km": self.elevation_profile[0],
+                "elevations_m": self.elevation_profile[1],
+            } if self.elevation_profile else None,
         }
 
     def __str__(self) -> str:
@@ -142,4 +148,9 @@ class Activity:
             start_latlng=data.get("start_latlng"),
             end_latlng=data.get("end_latlng"),
             summary_polyline=data.get("map", {}).get("summary_polyline") or None,
+            elevation_profile=(
+                (ep["distances_km"], ep["elevations_m"])
+                if (ep := data.get("elevation_profile"))
+                else None
+            ),
         )

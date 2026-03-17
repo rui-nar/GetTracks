@@ -43,9 +43,6 @@ a = Analysis(
         "lxml",
         # Polyline codec
         "polyline",
-        # Keyring backends (include common ones for portability)
-        "keyring.backends.Windows",
-        "keyring.backends.fail",
     ],
     hookspath=[],
     hooksconfig={},

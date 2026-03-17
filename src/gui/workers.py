@@ -150,6 +150,40 @@ class StreamFetchWorker(QThread):
         self.finished.emit(tracks)
 
 
+class BatchElevationFetchWorker(QThread):
+    """Fetch and cache elevation profiles for a list of activities.
+
+    Activities whose ``elevation_profile`` is already set are skipped.
+    Results are written directly onto each ``Activity`` object so that
+    the caller can rebuild the aggregated chart in ``finished``.
+    """
+
+    progress = pyqtSignal(str)           # e.g. "Fetching 2 / 5…"
+    finished = pyqtSignal(list)          # the same activities list, now with profiles set
+    error    = pyqtSignal(str)
+
+    def __init__(self, api_client, activities: list) -> None:
+        super().__init__()
+        self.api_client = api_client
+        self.activities = activities
+
+    def run(self) -> None:
+        missing = [a for a in self.activities if not a.elevation_profile and a.id > 0]
+        total = len(missing)
+        for i, act in enumerate(missing, 1):
+            self.progress.emit(f"Fetching elevation {i} / {total}…")
+            try:
+                streams = self.api_client.get_activity_streams(act.id)
+                alt  = streams.get("altitude", {}).get("data", [])
+                dist = streams.get("distance", {}).get("data", [])
+                if alt and dist:
+                    n = min(len(alt), len(dist))
+                    act.elevation_profile = ([d / 1000 for d in dist[:n]], list(alt[:n]))
+            except Exception:
+                pass  # leave profile as None; chart will skip this activity
+        self.finished.emit(self.activities)
+
+
 class ElevationFetchWorker(QThread):
     """Fetch altitude + distance streams for a single activity."""
 

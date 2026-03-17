@@ -30,6 +30,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
+from src.visualization.transport_icons import draw_transport_icon
 from src.visualization.map_projection import (
     MIN_ZOOM, MAX_ZOOM, TILE_SIZE,
     lat_lon_to_world_px, world_px_to_lat_lon, tile_to_world_px,
@@ -60,6 +61,7 @@ class Marker:
     color: QColor = field(default_factory=lambda: QColor("#3388ff"))
     radius: float = 6.0
     tooltip: str = ""
+    icon: str = ""   # Unicode emoji — renders as a badge instead of a plain circle
 
 
 # ---------------------------------------------------------------------------
@@ -482,9 +484,19 @@ class MapCanvas(QWidget):
             wx, wy = lat_lon_to_world_px(m.lat, m.lon, z)
             sx = (wx - cx) * s + W / 2.0
             sy = (wy - cy) * s + H / 2.0
-            p.setBrush(m.color)
-            p.setPen(QPen(m.color.lighter(150), 1))
-            p.drawEllipse(QPointF(sx, sy), m.radius, m.radius)
+
+            if m.icon:
+                # White circle badge with colored border
+                badge_r = 16.0
+                p.setBrush(QColor("white"))
+                p.setPen(QPen(m.color, 2.5))
+                p.drawEllipse(QPointF(sx, sy), badge_r, badge_r)
+                # Custom silhouette icon inside the badge
+                draw_transport_icon(p, sx, sy, badge_r * 1.55, m.icon, m.color)
+            else:
+                p.setBrush(m.color)
+                p.setPen(QPen(m.color.lighter(150), 1))
+                p.drawEllipse(QPointF(sx, sy), m.radius, m.radius)
 
         p.setBrush(Qt.BrushStyle.NoBrush)
 

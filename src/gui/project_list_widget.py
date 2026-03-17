@@ -8,6 +8,7 @@ from PyQt6.QtCore import (
     Qt, QModelIndex, QSize, pyqtSignal,
 )
 from PyQt6.QtGui import QAction, QColor, QFont, QPainter, QPen
+from src.visualization.transport_icons import draw_activity_icon, draw_transport_icon
 from PyQt6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QMenu, QPushButton,
@@ -27,12 +28,6 @@ _SEGMENT_COLORS = {
     "flight": "#1565C0",
     "boat":   "#00838F",
     "bus":    "#6A1B9A",
-}
-_SEGMENT_ICONS = {
-    "train":  "🚂",
-    "flight": "✈",
-    "boat":   "⛴",
-    "bus":    "🚌",
 }
 _TYPE_COLORS = {
     "run":   "#3388ff",
@@ -95,13 +90,10 @@ class _ItemDelegate(QStyledItemDelegate):
 
         if item.item_type == "activity" and item._activity:
             act = item._activity
-            # Icon (type initial)
-            icon_font = QFont()
-            icon_font.setPointSize(14)
-            icon_font.setBold(True)
-            painter.setFont(icon_font)
-            painter.setPen(bar_color)
-            painter.drawText(x, y, 28, h, Qt.AlignmentFlag.AlignVCenter, act.type[0].upper())
+            # Silhouette activity icon
+            icon_cx = x + 14
+            icon_cy = y + h / 2
+            draw_activity_icon(painter, icon_cx, icon_cy, 21, act.type, bar_color)
 
             # Name
             name_font = QFont()
@@ -123,13 +115,8 @@ class _ItemDelegate(QStyledItemDelegate):
 
         elif item.item_type == "segment" and item.segment:
             seg = item.segment
-            icon = _SEGMENT_ICONS.get(seg.segment_type, "•")
-
-            # Icon
-            icon_font = QFont()
-            icon_font.setPointSize(18)
-            painter.setFont(icon_font)
-            painter.drawText(x, y, 32, h, Qt.AlignmentFlag.AlignVCenter, icon)
+            # Silhouette transport icon
+            draw_transport_icon(painter, x + 14, y + h / 2, 21, seg.segment_type, bar_color)
 
             # Label
             name_font = QFont()
@@ -173,7 +160,7 @@ class ProjectListWidget(QWidget):
     """
 
     item_reordered = pyqtSignal(int, int)
-    item_selected  = pyqtSignal(object)
+    selection_changed = pyqtSignal(list)   # list[ProjectItem] — empty when nothing selected
     insert_segment_requested = pyqtSignal(int)
     remove_item_requested = pyqtSignal(int)
 
@@ -194,6 +181,13 @@ class ProjectListWidget(QWidget):
     def refresh(self) -> None:
         """Re-render the list from the current project state."""
         self._populate()
+
+    def clear_selection(self) -> None:
+        """Deselect all items without emitting selection_changed."""
+        self._list.blockSignals(True)
+        self._list.clearSelection()
+        self._list.setCurrentItem(None)
+        self._list.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Internal
@@ -225,10 +219,10 @@ class ProjectListWidget(QWidget):
         self._list.setItemDelegate(_ItemDelegate())
         self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_context_menu)
-        self._list.currentItemChanged.connect(self._on_selection_changed)
+        self._list.itemSelectionChanged.connect(self._on_selection_changed)
         self._list.model().rowsMoved.connect(self._on_rows_moved)
         layout.addWidget(self._list)
 
@@ -257,13 +251,13 @@ class ProjectListWidget(QWidget):
         to_index = dest_row if dest_row <= src_start else dest_row - 1
         self.item_reordered.emit(src_start, to_index)
 
-    def _on_selection_changed(self, current: Optional[QListWidgetItem],
-                               _prev) -> None:
-        if current is None:
-            return
-        item: ProjectItem = current.data(Qt.ItemDataRole.UserRole)
-        if item is not None:
-            self.item_selected.emit(item)
+    def _on_selection_changed(self) -> None:
+        items = [
+            wi.data(Qt.ItemDataRole.UserRole)
+            for wi in self._list.selectedItems()
+            if wi.data(Qt.ItemDataRole.UserRole) is not None
+        ]
+        self.selection_changed.emit(items)
 
     def _on_context_menu(self, pos) -> None:
         wi = self._list.itemAt(pos)

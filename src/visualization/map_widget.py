@@ -217,7 +217,8 @@ class MapWidget(QWidget):
                 ))
                 mid = coords[len(coords) // 2]
                 self._canvas.add_marker(Marker(
-                    lat=mid[0], lon=mid[1], color=color, tooltip=tooltip
+                    lat=mid[0], lon=mid[1], color=color, tooltip=tooltip,
+                    icon=seg.segment_type,   # key used by draw_transport_icon
                 ))
                 all_lats += [c[0] for c in coords]
                 all_lons += [c[1] for c in coords]
@@ -226,6 +227,57 @@ class MapWidget(QWidget):
             self._canvas.fit_bounds(min(all_lats), max(all_lats), min(all_lons), max(all_lons))
         else:
             self._create_empty_map()
+
+    def display_activities(self, activities) -> None:
+        """Render multiple activities as a combined map view (multi-selection)."""
+        self._last_render = ('activities', activities)
+        self._canvas.clear_overlays()
+        all_lats, all_lons = [], []
+        for i, activity in enumerate(activities):
+            color = QColor(_TYPE_COLORS.get(activity.type.lower(), _DEFAULT_COLOR))
+            coords = self._decode_polyline(activity)
+            tooltip = f"{activity.name} · {activity.type} · {activity.distance/1000:.1f} km"
+            if coords:
+                self._canvas.add_polyline(Polyline(
+                    coords=coords, color=color, weight=3, opacity=0.8, tooltip=tooltip
+                ))
+                self._canvas.add_marker(Marker(
+                    lat=coords[0][0], lon=coords[0][1], color=color, tooltip="Start"
+                ))
+                all_lats += [c[0] for c in coords]
+                all_lons += [c[1] for c in coords]
+            elif activity.start_latlng:
+                lat, lon = activity.start_latlng
+                self._canvas.add_marker(Marker(lat=lat, lon=lon, color=color, tooltip=tooltip))
+                all_lats.append(lat)
+                all_lons.append(lon)
+        if all_lats:
+            self._canvas.fit_bounds(min(all_lats), max(all_lats), min(all_lons), max(all_lons))
+        else:
+            self._create_empty_map()
+
+    def overlay_segments(self, project) -> None:
+        """Add segment arc polylines/markers to the current canvas without clearing it."""
+        for item in project.items:
+            if item.item_type != "segment" or item.segment is None:
+                continue
+            seg = item.segment
+            color = QColor(_SEGMENT_COLORS.get(seg.segment_type, "#888888"))
+            coords = great_circle_points(
+                seg.start.lat, seg.start.lon,
+                seg.end.lat, seg.end.lon,
+            )
+            tooltip = seg.label or seg.segment_type
+            self._canvas.add_polyline(Polyline(
+                coords=coords, color=color, weight=2, opacity=0.75,
+                dash_pattern=[6.0, 6.0], tooltip=tooltip,
+            ))
+            mid = coords[len(coords) // 2]
+            self._canvas.add_marker(Marker(
+                lat=mid[0], lon=mid[1], color=color,
+                tooltip=tooltip, icon=seg.segment_type,
+            ))
+        self._canvas.update()
 
     def clear_map(self) -> None:
         self._last_render = ('empty', None)

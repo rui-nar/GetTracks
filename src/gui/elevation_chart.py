@@ -1,5 +1,6 @@
 """QPainter-based elevation profile chart widget."""
 
+import math
 from typing import List
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 from PyQt6.QtCore import Qt, QRectF, QPointF
@@ -100,28 +101,41 @@ class ElevationChart(QWidget):
             y = chart_y + chart_h - ((elev - elev_min) / elev_range) * chart_h
             return QPointF(x, y)
 
-        # Grid lines (3 horizontal)
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+
+        # Horizontal grid lines + Y-axis labels (3 levels)
         painter.setPen(QPen(self._GRID, 1))
         for frac in (0.0, 0.5, 1.0):
             y = chart_y + chart_h * (1 - frac)
             painter.drawLine(int(chart_x), int(y), int(chart_x + chart_w), int(y))
-
-        # Y-axis labels
-        font = QFont()
-        font.setPointSize(8)
-        painter.setFont(font)
         painter.setPen(QPen(self._TEXT))
         for frac in (0.0, 0.5, 1.0):
             elev_val = elev_min + frac * elev_range
             y = chart_y + chart_h * (1 - frac)
             label = f"{elev_val:,.0f}m"
-            fm = QFontMetrics(font)
             lw = fm.horizontalAdvance(label)
             painter.drawText(int(chart_x - lw - 4), int(y + 4), label)
 
-        # X-axis label (total distance)
-        dist_label = f"{dist_max:.1f} km"
-        painter.drawText(int(chart_x + chart_w - 24), int(chart_y + chart_h + 14), dist_label)
+        # X-axis ticks — dynamic "nice" step, always ~5 divisions
+        x_step = self._nice_step(dist_max, target_divisions=5)
+        tick_val = 0.0
+        while tick_val <= dist_max + x_step * 0.01:
+            x = chart_x + (min(tick_val, dist_max) / dist_max) * chart_w
+            # Light vertical grid line
+            painter.setPen(QPen(self._GRID, 1))
+            painter.drawLine(int(x), int(chart_y), int(x), int(chart_y + chart_h))
+            # Tick label
+            painter.setPen(QPen(self._TEXT))
+            label = f"{tick_val:.0f}" if tick_val == int(tick_val) else f"{tick_val:.1f}"
+            lw = fm.horizontalAdvance(label)
+            painter.drawText(int(x - lw / 2), int(chart_y + chart_h + 14), label)
+            tick_val += x_step
+        # Unit label at far right
+        painter.drawText(int(chart_x + chart_w - fm.horizontalAdvance("km") + 2),
+                         int(chart_y + chart_h + 14), "km")
 
         # Filled area path
         path = QPainterPath()
@@ -162,6 +176,17 @@ class ElevationChart(QWidget):
             ))
             info = f"↑ {gain:.0f} m  ·  {elev_min:.0f}–{elev_max:.0f} m"
             painter.drawText(int(chart_x + 4), int(chart_y + 12), info)
+
+    @staticmethod
+    def _nice_step(total: float, target_divisions: int = 5) -> float:
+        """Return a "nice" axis step such that total / step ≈ target_divisions."""
+        raw = total / target_divisions
+        mag = 10 ** math.floor(math.log10(raw)) if raw > 0 else 1
+        for candidate in (1, 2, 2.5, 5, 10):
+            step = candidate * mag
+            if total / step <= target_divisions + 1:
+                return step
+        return 10 * mag
 
     def _draw_placeholder(self, painter: QPainter, w: int, h: int, text: str) -> None:
         painter.setPen(QPen(self._LOADING))

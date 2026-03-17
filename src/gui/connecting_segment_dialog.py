@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QButtonGroup
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
 
 from src.models.activity import Activity
 from src.models.great_circle import haversine_km
-from src.models.project import ConnectingSegment, SegmentEndpoint
+from src.models.project import ConnectingSegment, Project, ProjectItem, SegmentEndpoint
 
 
 _SEGMENT_TYPES = ["train", "flight", "boat", "bus"]
@@ -196,6 +197,261 @@ class ConnectingSegmentDialog(QDialog):
             d = haversine_km(
                 self._start_lat.value(), self._start_lon.value(),
                 self._end_lat.value(), self._end_lon.value(),
+            )
+            self._dist_label.setText(f"≈ {d:.0f} km (great circle)")
+        except Exception:
+            self._dist_label.setText("—")
+
+    @staticmethod
+    def _make_lat_spin() -> QDoubleSpinBox:
+        s = QDoubleSpinBox()
+        s.setRange(-90.0, 90.0)
+        s.setDecimals(6)
+        s.setSingleStep(0.01)
+        return s
+
+    @staticmethod
+    def _make_lon_spin() -> QDoubleSpinBox:
+        s = QDoubleSpinBox()
+        s.setRange(-180.0, 180.0)
+        s.setDecimals(6)
+        s.setSingleStep(0.01)
+        return s
+
+
+# ---------------------------------------------------------------------------
+# Transport type icon buttons
+# ---------------------------------------------------------------------------
+
+_TRANSPORT_ICONS = [
+    ("train",  "🚂", "Train"),
+    ("flight", "✈",  "Flight"),
+    ("boat",   "⛴",  "Boat"),
+    ("bus",    "🚌",  "Bus"),
+]
+
+_BTN_STYLE_NORMAL  = (
+    "QPushButton { font-size: 22px; padding: 8px 14px; border: 2px solid #cccccc;"
+    " border-radius: 8px; background: #f5f5f5; }"
+    "QPushButton:hover { background: #e0e8ff; border-color: #7baaf7; }"
+)
+_BTN_STYLE_CHECKED = (
+    "QPushButton { font-size: 22px; padding: 8px 14px; border: 2px solid #1565C0;"
+    " border-radius: 8px; background: #1565C0; color: white; }"
+)
+
+
+# ---------------------------------------------------------------------------
+# AddTransportationDialog
+# ---------------------------------------------------------------------------
+
+class AddTransportationDialog(QDialog):
+    """Dialog to add a transportation segment at a chosen position in the project.
+
+    After ``exec()`` returns ``Accepted`` use :meth:`result_segment` and
+    :meth:`result_index` to retrieve the segment and the insertion index.
+    """
+
+    def __init__(self, project: Project, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._project = project
+        self._act_map = {a.id: a for a in project.activities}
+        self._insert_index = 0
+
+        self.setWindowTitle("Add transportation")
+        self.setMinimumWidth(500)
+        self._build_ui()
+        # Trigger initial auto-fill
+        self._on_position_changed(0)
+
+    # ------------------------------------------------------------------
+    # Public results
+    # ------------------------------------------------------------------
+
+    def result_segment(self) -> ConnectingSegment:
+        """Return the built segment.  Only valid after ``accept()``."""
+        seg_type = _TRANSPORT_ICONS[self._selected_type_index()][0]
+        start = SegmentEndpoint(
+            lat=self._start_lat.value(),
+            lon=self._start_lon.value(),
+            source="auto",
+        )
+        end = SegmentEndpoint(
+            lat=self._end_lat.value(),
+            lon=self._end_lon.value(),
+            source="auto",
+        )
+        return ConnectingSegment(
+            segment_type=seg_type,
+            label=self._label_edit.text().strip(),
+            start=start,
+            end=end,
+        )
+
+    def result_index(self) -> int:
+        """Return the index at which the segment should be inserted into project.items."""
+        return self._insert_index
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # ── Transport type buttons ────────────────────────────────────
+        type_label = QLabel("Transport type:")
+        type_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(type_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._type_buttons: List[QPushButton] = []
+        self._type_group = QButtonGroup(self)
+        self._type_group.setExclusive(True)
+
+        for i, (_, icon, label) in enumerate(_TRANSPORT_ICONS):
+            btn = QPushButton(f"{icon}\n{label}")
+            btn.setCheckable(True)
+            btn.setStyleSheet(_BTN_STYLE_NORMAL)
+            btn.setMinimumWidth(90)
+            btn.toggled.connect(lambda checked, b=btn: self._on_type_toggled(b, checked))
+            self._type_group.addButton(btn, i)
+            self._type_buttons.append(btn)
+            btn_row.addWidget(btn)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        # Select first by default
+        self._type_buttons[0].setChecked(True)
+
+        # ── Position ──────────────────────────────────────────────────
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._position_combo = QComboBox()
+        self._populate_position_combo()
+        self._position_combo.currentIndexChanged.connect(self._on_position_changed)
+        form.addRow("Insert after:", self._position_combo)
+
+        # Label
+        self._label_edit = QLineEdit()
+        self._label_edit.setPlaceholderText("e.g. Basel → Paris (TGV)")
+        form.addRow("Label:", self._label_edit)
+
+        layout.addLayout(form)
+
+        # ── Start / End coordinates ───────────────────────────────────
+        coord_layout = QFormLayout()
+        coord_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        start_row = QHBoxLayout()
+        self._start_lat = self._make_lat_spin()
+        self._start_lon = self._make_lon_spin()
+        start_row.addWidget(QLabel("Lat"))
+        start_row.addWidget(self._start_lat)
+        start_row.addWidget(QLabel("Lon"))
+        start_row.addWidget(self._start_lon)
+        coord_layout.addRow("Start:", start_row)
+
+        end_row = QHBoxLayout()
+        self._end_lat = self._make_lat_spin()
+        self._end_lon = self._make_lon_spin()
+        end_row.addWidget(QLabel("Lat"))
+        end_row.addWidget(self._end_lat)
+        end_row.addWidget(QLabel("Lon"))
+        end_row.addWidget(self._end_lon)
+        coord_layout.addRow("End:", end_row)
+
+        self._dist_label = QLabel("— km")
+        coord_layout.addRow("Distance:", self._dist_label)
+
+        layout.addLayout(coord_layout)
+
+        for spin in (self._start_lat, self._start_lon, self._end_lat, self._end_lon):
+            spin.valueChanged.connect(self._update_distance)
+
+        # ── Buttons ───────────────────────────────────────────────────
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Insert")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _populate_position_combo(self) -> None:
+        self._position_combo.clear()
+        self._position_combo.addItem("At beginning", 0)
+        for i, item in enumerate(self._project.items):
+            label = self._item_label(item)
+            self._position_combo.addItem(f"After: {label}", i + 1)
+
+    def _item_label(self, item: ProjectItem) -> str:
+        if item.item_type == "activity":
+            act = self._act_map.get(item.activity_id)
+            if act:
+                date_str = act.start_date.strftime("%Y-%m-%d") if act.start_date else "?"
+                return f"{act.name} ({date_str})"
+        if item.item_type == "segment" and item.segment:
+            return item.segment.label or f"{item.segment.segment_type.capitalize()} segment"
+        return "item"
+
+    def _on_position_changed(self, combo_index: int) -> None:
+        self._insert_index = self._position_combo.itemData(combo_index) or 0
+        prev_act, next_act = self._adjacent_activities(self._insert_index)
+
+        if prev_act:
+            coords = prev_act.end_latlng or prev_act.start_latlng
+            if coords:
+                self._start_lat.setValue(coords[0])
+                self._start_lon.setValue(coords[1])
+
+        if next_act:
+            coords = next_act.start_latlng
+            if coords:
+                self._end_lat.setValue(coords[0])
+                self._end_lon.setValue(coords[1])
+
+        self._update_distance()
+
+    def _adjacent_activities(
+        self, insert_index: int
+    ) -> Tuple[Optional[Activity], Optional[Activity]]:
+        """Return the activity immediately before and after *insert_index*."""
+        prev_act: Optional[Activity] = None
+        next_act: Optional[Activity] = None
+        items = self._project.items
+        for i in range(insert_index - 1, -1, -1):
+            it = items[i]
+            if it.item_type == "activity":
+                prev_act = self._act_map.get(it.activity_id)
+                if prev_act:
+                    break
+        for i in range(insert_index, len(items)):
+            it = items[i]
+            if it.item_type == "activity":
+                next_act = self._act_map.get(it.activity_id)
+                if next_act:
+                    break
+        return prev_act, next_act
+
+    def _selected_type_index(self) -> int:
+        return self._type_group.checkedId()
+
+    def _on_type_toggled(self, btn: QPushButton, checked: bool) -> None:
+        btn.setStyleSheet(_BTN_STYLE_CHECKED if checked else _BTN_STYLE_NORMAL)
+
+    def _update_distance(self) -> None:
+        try:
+            d = haversine_km(
+                self._start_lat.value(), self._start_lon.value(),
+                self._end_lat.value(),   self._end_lon.value(),
             )
             self._dist_label.setText(f"≈ {d:.0f} km (great circle)")
         except Exception:

@@ -1,10 +1,28 @@
 """OAuth callback handler for Strava authentication."""
 
+import socket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from typing import Optional, Callable
+from typing import Optional
 import webbrowser
+
+
+class _DualStackServer(HTTPServer):
+    """HTTPServer that accepts both IPv4 and IPv6 loopback connections.
+
+    On Windows 11, ``localhost`` resolves to ``::1`` (IPv6) rather than
+    ``127.0.0.1`` (IPv4).  Binding an AF_INET6 socket with IPV6_V6ONLY=0
+    makes the OS accept connections on both address families through a
+    single socket, so the OAuth redirect works regardless of how the
+    system resolves ``localhost``.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self) -> None:
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
 
 
 class OAuthCallbackServer:
@@ -68,12 +86,22 @@ class OAuthCallbackServer:
         return CallbackHandler
 
     def start(self) -> None:
-        """Start the callback server in a background thread."""
+        """Start the callback server in a background thread.
+
+        Attempts a dual-stack (IPv4 + IPv6) server first so that the OAuth
+        redirect works whether the OS resolves ``localhost`` to ``127.0.0.1``
+        or ``::1``.  Falls back to IPv4-only if dual-stack is unavailable.
+        """
         self.auth_code = None
         self.auth_error = None
         self._callback_received.clear()
 
-        self.server = HTTPServer(("127.0.0.1", self.port), self._make_handler())
+        try:
+            self.server = _DualStackServer(("::", self.port), self._make_handler())
+        except OSError:
+            # Dual-stack not supported on this platform — fall back to IPv4
+            self.server = HTTPServer(("127.0.0.1", self.port), self._make_handler())
+
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 

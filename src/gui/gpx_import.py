@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 
 import gpxpy
 import polyline as polyline_codec
@@ -28,11 +28,12 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def import_gpx_file(path: str) -> List[Activity]:
-    """Parse *path* and return one synthetic :class:`Activity` per GPX track.
+    """Parse *path* and return a list of Activity objects (one per GPX track).
 
-    Returns an empty list (never raises) if the file cannot be parsed.
-    Negative IDs are stable across imports of the same file so that
-    :meth:`Project.add_activities` deduplicates correctly.
+    Elevation profiles are stored directly on ``activity.elevation_profile``
+    so they are persisted in the project file.  Returns ``[]`` (never raises)
+    if the file cannot be parsed.  Negative IDs are stable across imports so
+    that :meth:`Project.add_activities` deduplicates correctly.
     """
     try:
         with open(path, encoding="utf-8") as fh:
@@ -83,18 +84,34 @@ def import_gpx_file(path: str) -> List[Activity]:
                 last_time = last_time.replace(tzinfo=timezone.utc)
             elapsed_time = moving_time = int((last_time - first_time).total_seconds())
 
-        # Elevation gain
+        # Elevation gain + per-point elevation profile for the chart
         elev_gain = 0.0
-        elevations = [pt.elevation for pt in points if pt.elevation is not None]
-        for i in range(1, len(elevations)):
-            diff = elevations[i] - elevations[i - 1]
-            if diff > 0:
-                elev_gain += diff
+        raw_elevations = [pt.elevation for pt in points]
+        has_elevation = any(e is not None for e in raw_elevations)
+
+        if has_elevation:
+            # Build parallel (distance_km, elevation_m) arrays, skipping missing points
+            dist_acc = 0.0
+            prof_dist: List[float] = []
+            prof_elev: List[float] = []
+            prev_coord: Optional[Tuple[float, float]] = None
+            for i, (pt, elev) in enumerate(zip(points, raw_elevations)):
+                c = (pt.latitude, pt.longitude)
+                if prev_coord is not None:
+                    dist_acc += _haversine_m(prev_coord[0], prev_coord[1], c[0], c[1]) / 1000.0
+                prev_coord = c
+                if elev is not None:
+                    prof_dist.append(dist_acc)
+                    prof_elev.append(elev)
+                    if len(prof_elev) > 1 and prof_elev[-1] > prof_elev[-2]:
+                        elev_gain += prof_elev[-1] - prof_elev[-2]
+        else:
+            prof_dist, prof_elev = [], []
 
         start_latlng = [coords[0][0], coords[0][1]]
         end_latlng   = [coords[-1][0], coords[-1][1]]
 
-        activities.append(Activity(
+        act = Activity(
             id=synthetic_id,
             name=name,
             type="Run",
@@ -124,6 +141,8 @@ def import_gpx_file(path: str) -> List[Activity]:
             start_latlng=start_latlng,
             end_latlng=end_latlng,
             summary_polyline=encoded,
-        ))
+            elevation_profile=(prof_dist, prof_elev) if has_elevation and len(prof_dist) >= 2 else None,
+        )
+        activities.append(act)
 
     return activities

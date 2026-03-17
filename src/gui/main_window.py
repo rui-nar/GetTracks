@@ -29,8 +29,8 @@ from src.gui.stats_bar import StatsBarWidget
 from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
 from src.gui.project_list_widget import ProjectListWidget
-from src.gui.connecting_segment_dialog import ConnectingSegmentDialog
-from src.gui.workers import StreamFetchWorker, ElevationFetchWorker
+from src.gui.connecting_segment_dialog import AddTransportationDialog, ConnectingSegmentDialog
+from src.gui.workers import StreamFetchWorker, ElevationFetchWorker, BatchElevationFetchWorker
 
 
 class ActivityListWidget(QListWidget):
@@ -184,18 +184,16 @@ class MainWindow(QMainWindow):
         # Control buttons
         button_layout = QHBoxLayout()
 
-        self.select_all_button = QPushButton("Select All")
-        self.select_all_button.setEnabled(False)
-        button_layout.addWidget(self.select_all_button)
+        self.view_project_button = QPushButton("View Project")
+        self.view_project_button.setEnabled(False)
+        self.view_project_button.setToolTip("Show all project tracks on the map using stored polylines")
+        self.view_project_button.clicked.connect(self._on_view_project)
+        button_layout.addWidget(self.view_project_button)
 
-        self.clear_selection_button = QPushButton("Clear Selection")
-        self.clear_selection_button.setEnabled(False)
-        button_layout.addWidget(self.clear_selection_button)
-
-        self.export_button = QPushButton("Visualise Selection")
+        self.export_button = QPushButton("Preview & Export")
         self.export_button.setEnabled(False)
         self.export_button.setToolTip(
-            "Fetch full GPS tracks for selected activities and preview before export"
+            "Fetch full GPS tracks for all project activities and preview before export"
         )
         button_layout.addWidget(self.export_button)
 
@@ -309,8 +307,8 @@ class MainWindow(QMainWindow):
         act_save_as.triggered.connect(self._file_save_as)
         file_menu.addAction(act_save_as)
 
-        # Import menu
-        import_menu = mb.addMenu("&Import")
+        # Add track menu
+        import_menu = mb.addMenu("&Add track")
 
         act_strava = QAction("From &Strava…", self)
         act_strava.triggered.connect(self._import_from_strava)
@@ -319,6 +317,12 @@ class MainWindow(QMainWindow):
         act_gpx = QAction("From &GPX file…", self)
         act_gpx.triggered.connect(self._import_from_gpx)
         import_menu.addAction(act_gpx)
+
+        import_menu.addSeparator()
+
+        act_transport = QAction("🚂 &Transportation…", self)
+        act_transport.triggered.connect(self._add_transportation)
+        import_menu.addAction(act_transport)
 
     # ------------------------------------------------------------------
     # File menu handlers
@@ -396,8 +400,7 @@ class MainWindow(QMainWindow):
         self._project_manager.mark_dirty()
         self.project_list.refresh()
         self.stats_bar.update_stats(project.activities)
-        self.select_all_button.setEnabled(bool(project.items))
-        self.clear_selection_button.setEnabled(bool(project.items))
+        self._update_export_button_state()
         if project.items:
             self.map_widget.setVisible(True)
             self.map_widget.display_project(project)
@@ -429,6 +432,21 @@ class MainWindow(QMainWindow):
             "success",
         )
 
+    def _add_transportation(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        dlg = AddTransportationDialog(project, self)
+        if dlg.exec() != AddTransportationDialog.DialogCode.Accepted:
+            return
+        seg = dlg.result_segment()
+        idx = dlg.result_index()
+        project.items.insert(idx, ProjectItem(item_type="segment", segment=seg))
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+
     def _confirm_discard_changes(self) -> bool:
         """Return True if it's safe to proceed (changes saved or discarded)."""
         if not self._project_manager.is_dirty:
@@ -452,6 +470,7 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self, project: Optional[Project]) -> None:
         """Called when a project is opened, created, or closed."""
+        self._exit_preview_mode()
         self._update_title()
         self.project_list.set_project(project)
         if project:
@@ -459,15 +478,17 @@ class MainWindow(QMainWindow):
             if project.activities:
                 self.map_widget.setVisible(True)
                 self.map_widget.display_project(project)
+                self._show_project_elevation(project)
             else:
                 self.map_widget.setVisible(False)
-            self.select_all_button.setEnabled(bool(project.items))
-            self.clear_selection_button.setEnabled(bool(project.items))
+                self.elevation_chart.clear()
+                self.elevation_chart.setVisible(False)
         else:
             self.map_widget.setVisible(False)
+            self.elevation_chart.clear()
+            self.elevation_chart.setVisible(False)
             self.stats_bar.update_stats([])
-            self.select_all_button.setEnabled(False)
-            self.clear_selection_button.setEnabled(False)
+        self._update_export_button_state()
 
     def _on_dirty_changed(self, dirty: bool) -> None:
         self._update_title()
@@ -493,18 +514,70 @@ class MainWindow(QMainWindow):
         self._project_manager.mark_dirty()
         self.map_widget.display_project(project)
 
-    def _on_item_selected(self, item: ProjectItem) -> None:
+    def _on_selection_changed(self, items: list) -> None:
         project = self._project_manager.project
-        if project is None:
+        if project is None or not items:
             return
-        if item.item_type == "activity":
-            activity = project.activity_by_id(item.activity_id)
-            if activity:
-                self.on_activity_selected(activity)
-        elif item.item_type == "segment" and item.segment:
+
+        act_map = {a.id: a for a in project.activities}
+
+        # Collect selected activities in project order
+        selected_acts = [
+            act_map[it.activity_id]
+            for it in items
+            if it.item_type == "activity" and it.activity_id in act_map
+        ]
+
+        if len(selected_acts) == 1:
+            self.on_activity_selected(selected_acts[0])
+        elif len(selected_acts) > 1:
+            self._on_multi_activity_selected(selected_acts)
+        else:
+            # Only segment(s) selected — show full project map, hide elevation
             self.elevation_chart.setVisible(False)
             self.map_widget.setVisible(True)
             self.map_widget.display_project(project)
+
+    def _on_multi_activity_selected(self, activities: list) -> None:
+        """Show combined map + aggregated elevation for a multi-activity selection."""
+        self.map_widget.setVisible(True)
+        self.map_widget.display_activities(activities)
+
+        # Show whatever is already cached while fetching the rest
+        self._render_multi_elevation(activities)
+
+        missing = [a for a in activities if not a.elevation_profile and a.id > 0]
+        if missing:
+            self.elevation_chart.set_loading(True)
+            self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
+            self._batch_elev_worker.finished.connect(
+                lambda acts: self._on_batch_elevation_done(acts)
+            )
+            self._batch_elev_worker.start()
+
+    def _on_batch_elevation_done(self, activities: list) -> None:
+        self._project_manager.mark_dirty()   # profiles are now cached on activity objects
+        self._render_multi_elevation(activities)
+
+    def _render_multi_elevation(self, activities: list) -> None:
+        """Aggregate cached elevation profiles and push to the chart."""
+        combined_dist: list = []
+        combined_elev: list = []
+        offset = 0.0
+        for act in activities:
+            if not act.elevation_profile:
+                continue
+            dists, elevs = act.elevation_profile
+            combined_dist.extend(d + offset for d in dists)
+            combined_elev.extend(elevs)
+            offset = combined_dist[-1] if combined_dist else offset
+        if combined_dist:
+            label = f"{len(activities)} activities"
+            self.elevation_chart.set_data(combined_dist, combined_elev, label)
+            self.elevation_chart.setVisible(True)
+        else:
+            self.elevation_chart.clear()
+            self.elevation_chart.setVisible(False)
 
     def _on_insert_segment_requested(self, index: int) -> None:
         project = self._project_manager.project
@@ -545,8 +618,6 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """Connect UI signals to handlers."""
-        self.select_all_button.clicked.connect(self.select_all_activities)
-        self.clear_selection_button.clicked.connect(self.clear_selection)
         self.export_button.clicked.connect(self.on_export_selected)
 
         # Project manager signals
@@ -555,7 +626,7 @@ class MainWindow(QMainWindow):
 
         # Project list signals
         self.project_list.item_reordered.connect(self._on_item_reordered)
-        self.project_list.item_selected.connect(self._on_item_selected)
+        self.project_list.selection_changed.connect(self._on_selection_changed)
         self.project_list.insert_segment_requested.connect(self._on_insert_segment_requested)
         self.project_list.remove_item_requested.connect(self._on_remove_item_requested)
 
@@ -592,23 +663,49 @@ class MainWindow(QMainWindow):
         self._fetch_elevation(activity)
 
     def _fetch_elevation(self, activity: Activity) -> None:
-        """Start an async fetch of the elevation profile for *activity*."""
+        """Show cached elevation profile or fetch from Strava if not yet cached."""
         if not activity.start_latlng:
             self.elevation_chart.clear()
             self.elevation_chart.setVisible(False)
             return
+
+        # Use cached profile if available (GPX always has one; Strava after first view)
+        if activity.elevation_profile:
+            dist_km, elev_m = activity.elevation_profile
+            self.elevation_chart.set_data(dist_km, elev_m, activity.name)
+            self.elevation_chart.setVisible(True)
+            return
+
+        if activity.id < 0:
+            # GPX activity with no elevation data in the file
+            self.elevation_chart.clear()
+            self.elevation_chart.setVisible(False)
+            return
+
+        # Strava activity — fetch altitude + distance streams for the first time
         self.elevation_chart.setVisible(True)
         self.elevation_chart.set_loading(True)
         self._elev_worker = ElevationFetchWorker(self.api_client, activity.id)
         self._elev_worker.finished.connect(
-            lambda dist, elev: self._on_elevation_fetched(dist, elev, activity.name)
+            lambda dist, elev, act=activity:
+                self._on_elevation_fetched(dist, elev, act)
         )
-        self._elev_worker.error.connect(lambda _: self.elevation_chart.clear())
+        self._elev_worker.error.connect(self._on_elevation_error)
         self._elev_worker.start()
 
-    def _on_elevation_fetched(self, distances_km, elevations_m, name: str) -> None:
+    def _on_elevation_error(self, msg: str) -> None:
+        self.elevation_chart.clear()
+        if not self.api_client.token_data:
+            self.show_toast(
+                "No Strava token — go to Add track → From Strava… to authenticate",
+                "warning", duration_ms=6000,
+            )
+
+    def _on_elevation_fetched(self, distances_km, elevations_m, activity: Activity) -> None:
         if distances_km and elevations_m:
-            self.elevation_chart.set_data(distances_km, elevations_m, name)
+            activity.elevation_profile = (distances_km, elevations_m)
+            self._project_manager.mark_dirty()
+            self.elevation_chart.set_data(distances_km, elevations_m, activity.name)
         else:
             self.elevation_chart.clear()
             self.elevation_chart.setVisible(False)
@@ -676,38 +773,59 @@ class MainWindow(QMainWindow):
 
         self.show_toast(f"Stream fetch error: {error_msg}", "error", duration_ms=6000)
 
-    def select_all_activities(self):
-        """Select all items in the project list."""
-        self.project_list._list.selectAll()
-
-    def clear_selection(self):
-        """Clear all selections."""
-        self.project_list._list.clearSelection()
-
     def _update_export_button_state(self):
-        """Enable/label export button based on selection and preview state."""
+        """Enable/label export button based on project state."""
+        project = self._project_manager.project
+        has_items = bool(project and project.items)
+        self.view_project_button.setEnabled(has_items)
         if self._pending_tracks is not None:
             self.export_button.setText("Export as GPX")
             self.export_button.setEnabled(True)
         else:
-            self.export_button.setText("Visualise Selection")
-            has_sel = len(self.project_list._list.selectedItems()) > 0
-            self.export_button.setEnabled(has_sel)
+            self.export_button.setText("Preview & Export")
+            self.export_button.setEnabled(has_items)
 
-    def _on_selection_changed(self):
-        """Exit preview mode if the user changes their selection."""
-        if self._pending_tracks is not None:
-            self._exit_preview_mode()
-        self._update_export_button_state()
+    def _on_view_project(self) -> None:
+        """Instantly show full project on map using stored summary polylines."""
+        project = self._project_manager.project
+        if project is None:
+            return
+        self._exit_preview_mode()
+        self.project_list.clear_selection()
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+        self._show_project_elevation(project)
+
+    def _show_project_elevation(self, project) -> None:
+        """Show aggregated elevation for all project activities, fetching any missing profiles."""
+        act_map = {a.id: a for a in project.activities}
+        activities = [
+            act_map[it.activity_id]
+            for it in project.items
+            if it.item_type == "activity" and it.activity_id in act_map
+        ]
+        self._render_multi_elevation(activities)
+
+        missing = [a for a in activities if not a.elevation_profile and a.id > 0]
+        if missing:
+            self.elevation_chart.set_loading(True)
+            self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
+            self._batch_elev_worker.finished.connect(
+                lambda acts: self._on_batch_elevation_done(acts)
+            )
+            self._batch_elev_worker.start()
 
     def _enter_preview_mode(self, tracks: List[Track]) -> None:
         """Show export preview on map and switch button to 'Save GPX'."""
         self._pending_tracks = tracks
+        project = self._project_manager.project
         self.map_widget.setVisible(True)
         self.map_widget.display_tracks(tracks)
+        if project:
+            self.map_widget.overlay_segments(project)
         n = len(tracks)
         self.update_status(
-            f"{n} track(s) shown — click 'Save GPX' to export, or change selection to cancel",
+            f"{n} track(s) ready — click 'Export as GPX' to save, or modify the project to cancel",
             "info",
         )
         self._update_export_button_state()
@@ -728,16 +846,14 @@ class MainWindow(QMainWindow):
         if project is None:
             return
 
-        # Collect selected activity items
+        # Collect all activity items from the project (in order)
         act_map = {a.id: a for a in project.activities}
-        selected_activities: List[Activity] = []
-        for wi in self.project_list._list.selectedItems():
-            from PyQt6.QtCore import Qt
-            item = wi.data(Qt.ItemDataRole.UserRole)
-            if item and item.item_type == "activity":
-                act = act_map.get(item.activity_id)
-                if act:
-                    selected_activities.append(act)
+        selected_activities: List[Activity] = [
+            act_map[it.activity_id]
+            for it in project.items
+            if it.item_type == "activity"
+            and it.activity_id in act_map
+        ]
 
         if not selected_activities:
             return
