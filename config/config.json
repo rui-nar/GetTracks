@@ -8,6 +8,7 @@
     "debug": false,
     "log_level": "INFO",
     "cache_dir": "cache",
-    "logs_dir": "logs"
+    "logs_dir": "logs",
+    "last_project_path": "E:/Documents/voyage 2026.gettracks"
   }
 }
