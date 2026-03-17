@@ -50,6 +50,7 @@ class Polyline:
     weight: float = 3.0
     opacity: float = 0.8
     tooltip: str = ""
+    dash_pattern: Optional[List[float]] = None   # e.g. [6.0, 6.0] for equal dash-gap
 
 
 @dataclass
@@ -454,6 +455,9 @@ class MapCanvas(QWidget):
             pen = QPen(color, poly.weight)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            if poly.dash_pattern:
+                pen.setStyle(Qt.PenStyle.CustomDashLine)
+                pen.setDashPattern(poly.dash_pattern)
             p.setPen(pen)
 
             pts = []

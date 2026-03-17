@@ -13,11 +13,27 @@ from PyQt6.QtGui import QColor
 import polyline as polyline_codec
 
 from src.models.activity import Activity
+from src.models.project import Project
 from src.models.track import Track
+from src.models.great_circle import great_circle_points
 from src.visualization.map_canvas import MapCanvas, Polyline, Marker
 from src.visualization.tile_cache import MemoryTileCache, DiskTileCache
 from src.visualization.tile_provider import PROVIDERS
 
+
+# Segment type → color and icon
+_SEGMENT_COLORS = {
+    "train":  "#8B4513",
+    "flight": "#1565C0",
+    "boat":   "#00838F",
+    "bus":    "#6A1B9A",
+}
+_SEGMENT_ICONS = {
+    "train":  "🚂",
+    "flight": "✈",
+    "boat":   "⛴",
+    "bus":    "🚌",
+}
 
 # Color per activity type (same as before)
 _TYPE_COLORS = {
@@ -154,6 +170,63 @@ class MapWidget(QWidget):
         else:
             self._create_empty_map()
 
+    def display_project(self, project: Project) -> None:
+        """Render a project's ordered items (activities + connecting segments)."""
+        self._last_render = ('project', project)
+        self._canvas.clear_overlays()
+
+        all_lats, all_lons = [], []
+        activity_map = {a.id: a for a in project.activities}
+
+        for item in project.items:
+            if item.item_type == "activity":
+                activity = activity_map.get(item.activity_id)
+                if activity is None:
+                    continue
+                color = QColor(_TYPE_COLORS.get(activity.type.lower(), _DEFAULT_COLOR))
+                coords = self._decode_polyline(activity)
+                tooltip = f"{activity.name} · {activity.type} · {activity.distance/1000:.1f} km"
+                if coords:
+                    self._canvas.add_polyline(Polyline(
+                        coords=coords, color=color, weight=3, opacity=0.7, tooltip=tooltip
+                    ))
+                    self._canvas.add_marker(Marker(
+                        lat=coords[0][0], lon=coords[0][1], color=color, tooltip="Start"
+                    ))
+                    all_lats += [c[0] for c in coords]
+                    all_lons += [c[1] for c in coords]
+                elif activity.start_latlng:
+                    lat, lon = activity.start_latlng
+                    self._canvas.add_marker(Marker(lat=lat, lon=lon, color=color, tooltip=tooltip))
+                    all_lats.append(lat)
+                    all_lons.append(lon)
+
+            elif item.item_type == "segment" and item.segment is not None:
+                seg = item.segment
+                color_hex = _SEGMENT_COLORS.get(seg.segment_type, "#888888")
+                color = QColor(color_hex)
+                icon = _SEGMENT_ICONS.get(seg.segment_type, "•")
+                coords = great_circle_points(
+                    seg.start.lat, seg.start.lon,
+                    seg.end.lat, seg.end.lon,
+                )
+                tooltip = f"{icon} {seg.label or seg.segment_type}"
+                self._canvas.add_polyline(Polyline(
+                    coords=coords, color=color, weight=2, opacity=0.75,
+                    dash_pattern=[6.0, 6.0], tooltip=tooltip,
+                ))
+                mid = coords[len(coords) // 2]
+                self._canvas.add_marker(Marker(
+                    lat=mid[0], lon=mid[1], color=color, tooltip=tooltip
+                ))
+                all_lats += [c[0] for c in coords]
+                all_lons += [c[1] for c in coords]
+
+        if all_lats:
+            self._canvas.fit_bounds(min(all_lats), max(all_lats), min(all_lons), max(all_lons))
+        else:
+            self._create_empty_map()
+
     def clear_map(self) -> None:
         self._last_render = ('empty', None)
         self._create_empty_map()
@@ -204,6 +277,8 @@ class MapWidget(QWidget):
             self.display_single_activity(data)
         elif kind == 'tracks':
             self.display_tracks(data)
+        elif kind == 'project':
+            self.display_project(data)
         else:
             self._create_empty_map()
 
