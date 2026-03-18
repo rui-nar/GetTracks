@@ -420,6 +420,7 @@ class MainWindow(QMainWindow):
         if project.items:
             self.map_widget.setVisible(True)
             self.map_widget.display_project(project)
+            self._show_project_elevation(project)
 
     def _import_from_gpx(self) -> None:
         project = self._project_manager.project
@@ -442,6 +443,7 @@ class MainWindow(QMainWindow):
         self.stats_bar.update_stats(project.activities)
         self.map_widget.setVisible(True)
         self.map_widget.display_project(project)
+        self._show_project_elevation(project)
         n = len(activities)
         self.show_toast(
             f"Imported {n} track{'s' if n != 1 else ''} from {os.path.basename(path)}",
@@ -564,6 +566,7 @@ class MainWindow(QMainWindow):
 
         missing = [a for a in activities if not a.elevation_profile and a.id > 0]
         if missing:
+            self.elevation_chart.setVisible(True)
             self.elevation_chart.set_loading(True)
             self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
             self._batch_elev_worker.finished.connect(
@@ -843,6 +846,7 @@ class MainWindow(QMainWindow):
 
         missing = [a for a in activities if not a.elevation_profile and a.id > 0]
         if missing:
+            self.elevation_chart.setVisible(True)
             self.elevation_chart.set_loading(True)
             self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
             self._batch_elev_worker.finished.connect(
@@ -969,16 +973,6 @@ def main():
 
     # Load configuration
     config = Config()
-
-    # Check if Strava is configured
-    if not config.validate_strava_config():
-        QMessageBox.critical(
-            None,
-            "Configuration Error",
-            "Strava client ID and secret are not configured.\n\n"
-            "Please check your config.json file."
-        )
-        return 1
 
     # Create and show main window; dismiss splash once window is ready
     window = MainWindow(config)
