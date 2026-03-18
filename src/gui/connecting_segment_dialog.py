@@ -246,23 +246,46 @@ _BTN_STYLE_CHECKED = (
 # ---------------------------------------------------------------------------
 
 class AddTransportationDialog(QDialog):
-    """Dialog to add a transportation segment at a chosen position in the project.
+    """Dialog to add or edit a transportation segment in the project.
+
+    Parameters
+    ----------
+    project:
+        The current project (used to populate the position combo).
+    segment:
+        Existing segment to edit; if provided the dialog pre-fills all
+        fields and the position combo is set to the segment's position.
+        Pass ``segment_index`` as the 0-based index in ``project.items``.
+    segment_index:
+        Only meaningful when ``segment`` is not None — the position of the
+        segment in ``project.items`` (used to pre-select the combo and to
+        return the correct ``result_index``).
 
     After ``exec()`` returns ``Accepted`` use :meth:`result_segment` and
     :meth:`result_index` to retrieve the segment and the insertion index.
     """
 
-    def __init__(self, project: Project, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        project: Project,
+        parent: Optional[QWidget] = None,
+        segment: Optional[ConnectingSegment] = None,
+        segment_index: int = 0,
+    ) -> None:
         super().__init__(parent)
         self._project = project
         self._act_map = {a.id: a for a in project.activities}
         self._insert_index = 0
+        self._existing_segment = segment
 
-        self.setWindowTitle("Add transportation")
+        self.setWindowTitle("Edit transportation" if segment else "Add transportation")
         self.setMinimumWidth(500)
         self._build_ui()
-        # Trigger initial auto-fill
-        self._on_position_changed(0)
+        if segment:
+            self._prefill_segment(segment, segment_index)
+        else:
+            # Trigger initial auto-fill
+            self._on_position_changed(0)
 
     # ------------------------------------------------------------------
     # Public results
@@ -281,7 +304,9 @@ class AddTransportationDialog(QDialog):
             lon=self._end_lon.value(),
             source="auto",
         )
+        existing_id = self._existing_segment.id if self._existing_segment else None
         return ConnectingSegment(
+            id=existing_id or ConnectingSegment.__dataclass_fields__["id"].default_factory(),
             segment_type=seg_type,
             label=self._label_edit.text().strip(),
             start=start,
@@ -289,7 +314,7 @@ class AddTransportationDialog(QDialog):
         )
 
     def result_index(self) -> int:
-        """Return the index at which the segment should be inserted into project.items."""
+        """Return the index at which the segment should be inserted/replaced in project.items."""
         return self._insert_index
 
     # ------------------------------------------------------------------
@@ -376,10 +401,42 @@ class AddTransportationDialog(QDialog):
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Insert")
+        ok_label = "Save" if self._existing_segment else "Insert"
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def _prefill_segment(self, segment: ConnectingSegment, segment_index: int) -> None:
+        """Pre-fill all fields from an existing segment (edit mode)."""
+        # Select the correct type button
+        type_key = segment.segment_type
+        for i, (key, _, _) in enumerate(_TRANSPORT_ICONS):
+            if key == type_key:
+                self._type_buttons[i].setChecked(True)
+                break
+
+        # Set position combo to the item *after* the segment's position
+        # (segment is at segment_index; "after item before it" = segment_index)
+        target_data = segment_index  # insertion point that equals the segment's own index
+        for i in range(self._position_combo.count()):
+            if self._position_combo.itemData(i) == target_data:
+                self._position_combo.blockSignals(True)
+                self._position_combo.setCurrentIndex(i)
+                self._position_combo.blockSignals(False)
+                self._insert_index = target_data
+                break
+
+        # Fill coordinates
+        self._start_lat.setValue(segment.start.lat)
+        self._start_lon.setValue(segment.start.lon)
+        self._end_lat.setValue(segment.end.lat)
+        self._end_lon.setValue(segment.end.lon)
+
+        # Label
+        self._label_edit.setText(segment.label)
+
+        self._update_distance()
 
     # ------------------------------------------------------------------
     # Helpers

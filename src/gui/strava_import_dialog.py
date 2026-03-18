@@ -92,14 +92,32 @@ class StravaImportDialog(QDialog):
 
         # ── Auth bar ──────────────────────────────────────────────────
         auth_bar = QHBoxLayout()
-        self._auth_btn = QPushButton("Authenticate with Strava")
+        self._auth_btn = QPushButton("Connect to Strava")
         self._auth_btn.setFixedHeight(30)
         self._auth_btn.clicked.connect(self._on_authenticate)
         auth_bar.addWidget(self._auth_btn)
-        self._auth_status = QLabel("Not authenticated")
+        self._auth_status = QLabel("○ Not connected")
+        self._auth_status.setStyleSheet("color: #666")
         auth_bar.addWidget(self._auth_status)
         auth_bar.addStretch()
+        self._fetch_btn = QPushButton("Fetch Activities")
+        self._fetch_btn.setFixedHeight(30)
+        self._fetch_btn.setEnabled(False)
+        self._fetch_btn.clicked.connect(self._on_fetch)
+        auth_bar.addWidget(self._fetch_btn)
         root.addLayout(auth_bar)
+
+        # ── Fetch status row ──────────────────────────────────────────
+        fetch_status_row = QHBoxLayout()
+        self._progress = QProgressBar()
+        self._progress.setFixedHeight(14)
+        self._progress.setRange(0, 0)
+        self._progress.setVisible(False)
+        fetch_status_row.addWidget(self._progress, stretch=1)
+        self._fetch_status = QLabel("")
+        self._fetch_status.setAlignment(Qt.AlignmentFlag.AlignRight)
+        fetch_status_row.addWidget(self._fetch_status, stretch=2)
+        root.addLayout(fetch_status_row)
 
         # ── Filter bar ────────────────────────────────────────────────
         filter_box = QGroupBox("Filters  (affect Available list only)")
@@ -160,25 +178,6 @@ class StravaImportDialog(QDialog):
         remove_btn.clicked.connect(self._remove_selected)
         mid_col.addWidget(remove_btn)
 
-        mid_col.addSpacing(20)
-
-        self._fetch_btn = QPushButton("Fetch Activities")
-        self._fetch_btn.setFixedWidth(140)
-        self._fetch_btn.clicked.connect(self._on_fetch)
-        mid_col.addWidget(self._fetch_btn)
-
-        self._progress = QProgressBar()
-        self._progress.setFixedWidth(140)
-        self._progress.setRange(0, 0)
-        self._progress.setVisible(False)
-        mid_col.addWidget(self._progress)
-
-        self._fetch_status = QLabel("")
-        self._fetch_status.setWordWrap(True)
-        self._fetch_status.setFixedWidth(140)
-        self._fetch_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mid_col.addWidget(self._fetch_status)
-
         mid_col.addStretch()
         cols.addLayout(mid_col, stretch=2)
 
@@ -235,11 +234,18 @@ class StravaImportDialog(QDialog):
 
     def _refresh_auth_status(self) -> None:
         if self._api_client.token_data:
-            self._auth_btn.setText("✓ Connected")
-            self._auth_status.setText("Connected to Strava")
+            athlete = self._api_client.token_data.get("athlete", {})
+            if athlete:
+                name = (athlete.get("firstname", "") + " " + athlete.get("lastname", "")).strip()
+            else:
+                name = ""
+            self._auth_status.setText(f"● Connected{' as ' + name if name else ''}")
+            self._auth_status.setStyleSheet("color: #2e7d32; font-weight: bold")
+            self._fetch_btn.setEnabled(True)
         else:
-            self._auth_btn.setText("Authenticate with Strava")
-            self._auth_status.setText("Not authenticated")
+            self._auth_status.setText("○ Not connected")
+            self._auth_status.setStyleSheet("color: #666")
+            self._fetch_btn.setEnabled(False)
 
     def _update_fetch_button_label(self) -> None:
         if self._project.activities:
@@ -397,10 +403,12 @@ class StravaImportDialog(QDialog):
         # Show a concise, actionable message for auth failures
         if "invalid or expired" in msg or "re-authenticate" in msg.lower() or "401" in msg:
             self._fetch_status.setText(
-                "Token expired — click\n\"Authenticate with Strava\"\nto reconnect"
+                "Token expired — click \"Connect to Strava\" to reconnect"
             )
             self._auth_btn.setEnabled(True)
-            self._auth_status.setText("Not authenticated")
+            self._auth_status.setText("○ Not connected")
+            self._auth_status.setStyleSheet("color: #666")
+            self._fetch_btn.setEnabled(False)
         else:
             self._fetch_status.setText(f"Error: {msg}")
 

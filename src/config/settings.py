@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 from src.exceptions.errors import ConfigurationError
 
+_USER_SETTINGS_PATH = Path.home() / ".config" / "GetTracks" / "settings.json"
+
 
 class Config:
     """Configuration management for GetTracks."""
@@ -56,6 +58,7 @@ class Config:
         
         self._config: Dict[str, Any] = {}
         self.load()
+        self._load_user_settings()
 
     def load(self) -> None:
         """
@@ -73,6 +76,34 @@ class Config:
         else:
             self._config = self.DEFAULT_CONFIG.copy()
             self.save()
+
+    def _load_user_settings(self) -> None:
+        """Overlay user settings (~/.config/GetTracks/settings.json) over project config."""
+        if not _USER_SETTINGS_PATH.exists():
+            return
+        try:
+            with open(_USER_SETTINGS_PATH, "r") as f:
+                user = json.load(f)
+            # Overlay only the strava block so user credentials take precedence
+            if "strava" in user and isinstance(user["strava"], dict):
+                if "strava" not in self._config:
+                    self._config["strava"] = {}
+                self._config["strava"].update(user["strava"])
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def save_user_settings(self) -> None:
+        """Persist Strava credentials to ~/.config/GetTracks/settings.json."""
+        _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "strava": {
+                "client_id": self.get("strava.client_id", ""),
+                "client_secret": self.get("strava.client_secret", ""),
+                "redirect_uri": self.get("strava.redirect_uri", "http://localhost:8000/callback"),
+            }
+        }
+        with open(_USER_SETTINGS_PATH, "w") as f:
+            json.dump(data, f, indent=2)
 
     def save(self) -> None:
         """Save current configuration to file."""

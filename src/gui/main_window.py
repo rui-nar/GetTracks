@@ -7,7 +7,7 @@ from typing import Optional, List
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QPushButton, QProgressBar,
-    QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog, QInputDialog,
+    QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog, QInputDialog, QDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QColor, QPainter
@@ -30,6 +30,7 @@ from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
 from src.gui.project_list_widget import ProjectListWidget
 from src.gui.connecting_segment_dialog import AddTransportationDialog, ConnectingSegmentDialog
+from src.gui.strava_settings_dialog import StravaSettingsDialog
 from src.gui.workers import StreamFetchWorker, ElevationFetchWorker, BatchElevationFetchWorker
 
 
@@ -307,12 +308,19 @@ class MainWindow(QMainWindow):
         act_save_as.triggered.connect(self._file_save_as)
         file_menu.addAction(act_save_as)
 
+        # Settings menu
+        settings_menu = mb.addMenu("&Settings")
+        act_strava_cfg = QAction("Strava Connection…", self)
+        act_strava_cfg.triggered.connect(self._open_strava_settings)
+        settings_menu.addAction(act_strava_cfg)
+
         # Add track menu
         import_menu = mb.addMenu("&Add track")
 
-        act_strava = QAction("From &Strava…", self)
-        act_strava.triggered.connect(self._import_from_strava)
-        import_menu.addAction(act_strava)
+        self._act_strava = QAction("From &Strava…", self)
+        self._act_strava.triggered.connect(self._import_from_strava)
+        import_menu.addAction(self._act_strava)
+        self._update_strava_action_state()
 
         act_gpx = QAction("From &GPX file…", self)
         act_gpx.triggered.connect(self._import_from_gpx)
@@ -384,6 +392,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Import menu handlers
     # ------------------------------------------------------------------
+
+    def _update_strava_action_state(self) -> None:
+        self._act_strava.setEnabled(self.config.validate_strava_config())
+
+    def _open_strava_settings(self) -> None:
+        dlg = StravaSettingsDialog(self.config, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._update_strava_action_state()
 
     def _import_from_strava(self) -> None:
         project = self._project_manager.project
@@ -606,6 +622,24 @@ class MainWindow(QMainWindow):
         self.map_widget.setVisible(True)
         self.map_widget.display_project(project)
 
+    def _on_edit_segment_requested(self, index: int) -> None:
+        project = self._project_manager.project
+        if project is None or index < 0 or index >= len(project.items):
+            return
+        item = project.items[index]
+        if item.item_type != "segment" or item.segment is None:
+            return
+        dlg = AddTransportationDialog(
+            project, self, segment=item.segment, segment_index=index
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        project.items[index] = ProjectItem(item_type="segment", segment=dlg.result_segment())
+        self._project_manager.mark_dirty()
+        self.project_list.refresh()
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+
     def _on_remove_item_requested(self, index: int) -> None:
         project = self._project_manager.project
         if project is None:
@@ -629,6 +663,7 @@ class MainWindow(QMainWindow):
         self.project_list.selection_changed.connect(self._on_selection_changed)
         self.project_list.insert_segment_requested.connect(self._on_insert_segment_requested)
         self.project_list.remove_item_requested.connect(self._on_remove_item_requested)
+        self.project_list.edit_segment_requested.connect(self._on_edit_segment_requested)
 
     def _restore_session(self) -> None:
         """Restore auth token and last open project."""

@@ -163,6 +163,7 @@ class ProjectListWidget(QWidget):
     selection_changed = pyqtSignal(list)   # list[ProjectItem] — empty when nothing selected
     insert_segment_requested = pyqtSignal(int)
     remove_item_requested = pyqtSignal(int)
+    edit_segment_requested = pyqtSignal(int)  # index of the segment item to edit
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -272,7 +273,12 @@ class ProjectListWidget(QWidget):
         menu.addAction(insert_below)
 
         if wi is not None:
+            item: ProjectItem = wi.data(Qt.ItemDataRole.UserRole)
             menu.addSeparator()
+            if item and item.item_type == "segment":
+                edit_act = QAction("Edit…", self)
+                edit_act.triggered.connect(lambda: self.edit_segment_requested.emit(index))
+                menu.addAction(edit_act)
             remove = QAction("Remove from project", self)
             remove.triggered.connect(lambda: self.remove_item_requested.emit(index))
             menu.addAction(remove)
