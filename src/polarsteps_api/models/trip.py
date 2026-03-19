@@ -193,6 +193,14 @@ class Trip(BaseModel):
     trip_buddies: Optional[list[TripBuddy]] = []
     trip_buddies_accepted_invited: Optional[list[TripBuddy]] = []
 
+    @field_validator("planned_countries", "route_segments", mode="before")
+    @classmethod
+    def filter_dict_lists(cls, v: Any) -> Any:
+        """Drop non-dict entries (API sometimes returns empty strings in these lists)."""
+        if isinstance(v, list):
+            return [item for item in v if isinstance(item, dict)]
+        return v
+
     @field_validator(
         "start_date",
         "end_date",
