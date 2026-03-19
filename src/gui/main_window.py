@@ -487,6 +487,18 @@ class MainWindow(QMainWindow):
             self.map_widget._canvas.set_view(step.lat, step.lon,
                                               self.map_widget._canvas._tile_zoom)
 
+    def _on_waypoints_removed(self, steps: list) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        remove_ids = {s.id for s in steps}
+        project.waypoints = [w for w in project.waypoints if w.id not in remove_ids]
+        self._project_manager.mark_dirty()
+        self._refresh_waypoints_section()
+        self.map_widget.display_project(project)
+        n = len(steps)
+        self.show_toast(f"Removed {n} waypoint{'s' if n > 1 else ''}", "info")
+
     def _import_from_strava(self) -> None:
         project = self._project_manager.project
         if project is None:
@@ -757,6 +769,7 @@ class MainWindow(QMainWindow):
 
         # Waypoints section signals
         self.waypoints_section.waypoint_selected.connect(self._on_waypoint_selected)
+        self.waypoints_section.waypoints_removed.connect(self._on_waypoints_removed)
 
         # Map waypoint pin clicks
         self.map_widget.waypoint_clicked.connect(self._on_waypoint_selected)

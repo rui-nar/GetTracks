@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QKeySequence
 from PyQt6.QtWidgets import (
-    QFrame, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QVBoxLayout, QWidget,
+    QAbstractItemView, QFrame, QLabel, QListWidget, QListWidgetItem,
+    QMenu, QPushButton, QVBoxLayout, QWidget,
 )
 
 from src.models.waypoint import TripStep
@@ -23,7 +23,8 @@ class WaypointsSectionWidget(QWidget):
         Emitted when the user clicks a row. Carries the TripStep.
     """
 
-    waypoint_selected = pyqtSignal(object)  # TripStep
+    waypoint_selected = pyqtSignal(object)   # TripStep
+    waypoints_removed = pyqtSignal(list)     # List[TripStep]
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -58,7 +59,11 @@ class WaypointsSectionWidget(QWidget):
         # List
         self._list = QListWidget()
         self._list.setAlternatingRowColors(True)
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.itemClicked.connect(self._on_item_clicked)
+        self._list.customContextMenuRequested.connect(self._on_context_menu)
+        self._list.installEventFilter(self)
         root.addWidget(self._list)
 
     # ------------------------------------------------------------------
@@ -101,3 +106,30 @@ class WaypointsSectionWidget(QWidget):
         step = item.data(Qt.ItemDataRole.UserRole)
         if step is not None:
             self.waypoint_selected.emit(step)
+
+    def _on_context_menu(self, pos) -> None:
+        if not self._list.selectedItems():
+            return
+        menu = QMenu(self)
+        n = len(self._list.selectedItems())
+        label = f"Remove {n} waypoint{'s' if n > 1 else ''}"
+        act = menu.addAction(label)
+        if menu.exec(self._list.mapToGlobal(pos)) == act:
+            self._remove_selected()
+
+    def _remove_selected(self) -> None:
+        to_remove = [
+            wi.data(Qt.ItemDataRole.UserRole)
+            for wi in self._list.selectedItems()
+            if wi.data(Qt.ItemDataRole.UserRole) is not None
+        ]
+        if to_remove:
+            self.waypoints_removed.emit(to_remove)
+
+    def eventFilter(self, obj, event) -> bool:
+        from PyQt6.QtCore import QEvent
+        if obj is self._list and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._remove_selected()
+                return True
+        return super().eventFilter(obj, event)
