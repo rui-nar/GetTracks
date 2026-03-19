@@ -12,10 +12,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import re
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
-    QListWidget, QListWidgetItem, QProgressBar,
+    QLineEdit, QListWidget, QListWidgetItem, QProgressBar,
     QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -104,6 +106,21 @@ class PolarstepsImportDialog(QDialog):
         status_row.addWidget(self._status_label, stretch=2)
         root.addLayout(status_row)
 
+        # ── Add by URL or ID ──────────────────────────────────────────
+        url_row = QHBoxLayout()
+        url_row.addWidget(QLabel("Trip URL or ID:"))
+        self._url_edit = QLineEdit()
+        self._url_edit.setPlaceholderText(
+            "e.g. https://www.polarsteps.com/user/12345678-trip-name  or  12345678"
+        )
+        self._url_edit.returnPressed.connect(self._on_add_by_url)
+        url_row.addWidget(self._url_edit, stretch=1)
+        add_url_btn = QPushButton("Add")
+        add_url_btn.setFixedWidth(50)
+        add_url_btn.clicked.connect(self._on_add_by_url)
+        url_row.addWidget(add_url_btn)
+        root.addLayout(url_row)
+
         # ── Two-column list area ──────────────────────────────────────
         cols = QHBoxLayout()
         cols.setSpacing(8)
@@ -181,6 +198,91 @@ class PolarstepsImportDialog(QDialog):
         dlg = PolarstepsSettingsDialog(self._config, self)
         if dlg.exec() == PolarstepsSettingsDialog.DialogCode.Accepted:
             self._refresh_auth_status()
+
+    # ------------------------------------------------------------------
+    # Add by URL / ID
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_trip_id(text: str) -> Optional[int]:
+        """Extract a numeric trip ID from a URL or raw integer string.
+
+        Polarsteps trip URLs look like:
+          https://www.polarsteps.com/<user>/<id>-<slug>
+        The numeric ID is the first segment of the path component after the username.
+        """
+        text = text.strip()
+        # Try raw integer first
+        if text.isdigit():
+            return int(text)
+        # Extract first long numeric run from URL path (trip IDs are 7-10 digits)
+        m = re.search(r'/(\d{5,})', text)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def _on_add_by_url(self) -> None:
+        if self._ps_client is None and not self._try_build_client():
+            self._status_label.setText("No credentials — click Connect first")
+            return
+        text = self._url_edit.text()
+        trip_id = self._parse_trip_id(text)
+        if trip_id is None:
+            self._status_label.setText("Could not parse a trip ID from that input")
+            return
+
+        # Already in right list?
+        if trip_id in self._right_ids():
+            self._status_label.setText(f"Trip {trip_id} is already selected")
+            return
+
+        self._url_edit.setEnabled(False)
+        self._status_label.setText(f"Looking up trip {trip_id}…")
+
+        from src.gui.workers import FetchPolarstepsTripsWorker as _unused  # noqa
+        # Use a tiny inline QThread to call get_trip and build the summary dict
+        from PyQt6.QtCore import QThread
+
+        ps_client = self._ps_client
+        class _LookupWorker(QThread):
+            done  = pyqtSignal(dict)
+            error = pyqtSignal(str)
+            def run(self_w):
+                try:
+                    resp = ps_client.get_trip(str(trip_id))
+                    if not resp.is_success or resp.trip is None:
+                        self_w.error.emit(f"Trip {trip_id} not found (status {resp.status_code})")
+                        return
+                    t = resp.trip
+                    self_w.done.emit({
+                        "id": t.id,
+                        "name": t.name or f"Trip {t.id}",
+                        "step_count": t.step_count or 0,
+                        "start_date": t.datetime_start,
+                        "end_date": t.datetime_end,
+                    })
+                except Exception as e:
+                    self_w.error.emit(str(e))
+
+        self._lookup_worker = _LookupWorker()
+        self._lookup_worker.done.connect(self._on_lookup_done)
+        self._lookup_worker.error.connect(self._on_lookup_error)
+        self._lookup_worker.start()
+
+    def _on_lookup_done(self, trip: dict) -> None:
+        self._url_edit.setEnabled(True)
+        self._url_edit.clear()
+        right_ids = self._right_ids()
+        if trip["id"] not in right_ids:
+            self._right_list.addItem(_make_item(trip))
+            self._update_labels()
+            self._status_label.setText(f"Added: {trip['name']}")
+        else:
+            self._status_label.setText(f"Trip already selected")
+
+    def _on_lookup_error(self, msg: str) -> None:
+        self._url_edit.setEnabled(True)
+        self._status_label.setText(f"Error: {msg}")
 
     # ------------------------------------------------------------------
     # Fetch
