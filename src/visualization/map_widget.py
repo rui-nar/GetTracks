@@ -7,9 +7,12 @@ rest of the application requires no changes.
 import os
 from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import pyqtSignal, Qt, QSize, QThread
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QSlider, QFrame, QScrollArea, QSizePolicy,
+)
+from PyQt6.QtGui import QColor, QPixmap, QFont
 
 import polyline as polyline_codec
 
@@ -63,6 +66,130 @@ _TILE_CACHE_DIR = os.path.join(
 )
 
 
+# ---------------------------------------------------------------------------
+# Thumbnail loader (shared with WaypointPanel, kept minimal here)
+# ---------------------------------------------------------------------------
+
+class _ThumbLoader(QThread):
+    loaded = pyqtSignal(str, object)  # url, QPixmap | None
+
+    def __init__(self, urls: list) -> None:
+        super().__init__()
+        self._urls = urls
+
+    def run(self) -> None:
+        import urllib.request
+        for url in self._urls:
+            if not url:
+                self.loaded.emit(url, None)
+                continue
+            try:
+                with urllib.request.urlopen(url, timeout=8) as resp:
+                    data = resp.read()
+                px = QPixmap()
+                px.loadFromData(data)
+                self.loaded.emit(url, px if not px.isNull() else None)
+            except Exception:
+                self.loaded.emit(url, None)
+
+
+# ---------------------------------------------------------------------------
+# Hover tooltip overlay
+# ---------------------------------------------------------------------------
+
+class _WaypointTooltip(QFrame):
+    """Floating overlay shown while hovering over a waypoint pin."""
+
+    _THUMB_SIZE = 64
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setStyleSheet(
+            "QFrame { background: rgba(30,30,30,220); border-radius: 6px; }"
+            "QLabel { color: white; }"
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setMaximumWidth(340)
+        self.hide()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(4)
+
+        self._title = QLabel()
+        font = QFont()
+        font.setBold(True)
+        self._title.setFont(font)
+        self._title.setWordWrap(True)
+        root.addWidget(self._title)
+
+        self._desc = QLabel()
+        self._desc.setWordWrap(True)
+        self._desc.setMaximumWidth(320)
+        root.addWidget(self._desc)
+
+        self._thumb_row = QHBoxLayout()
+        self._thumb_row.setSpacing(3)
+        root.addLayout(self._thumb_row)
+
+        self._thumb_labels: List[QLabel] = []
+
+    def set_step(self, step: "TripStep", thumb_cache: dict) -> None:
+        self._title.setText(step.name)
+        desc = (step.description or "").strip()
+        self._desc.setText(desc[:200] + ("…" if len(desc) > 200 else ""))
+        self._desc.setVisible(bool(desc))
+
+        for lbl in self._thumb_labels:
+            self._thumb_row.removeWidget(lbl)
+            lbl.deleteLater()
+        self._thumb_labels.clear()
+
+        for photo in step.photos[:5]:
+            lbl = QLabel()
+            lbl.setFixedSize(QSize(self._THUMB_SIZE, self._THUMB_SIZE))
+            lbl.setStyleSheet("background: #444; border-radius: 3px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            url = photo.thumb_url or photo.url
+            px = thumb_cache.get(url)
+            if px:
+                lbl.setPixmap(px.scaled(self._THUMB_SIZE, self._THUMB_SIZE,
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+            else:
+                lbl.setText("…")
+            self._thumb_labels.append(lbl)
+            self._thumb_row.addWidget(lbl)
+
+        self._thumb_row.addStretch()
+        self.adjustSize()
+
+    def update_thumb(self, url: str, px: QPixmap, step: "TripStep") -> None:
+        """Update a thumbnail label if it belongs to the currently shown step."""
+        for i, photo in enumerate(step.photos[:5]):
+            if (photo.thumb_url or photo.url) == url and i < len(self._thumb_labels):
+                lbl = self._thumb_labels[i]
+                lbl.setPixmap(px.scaled(self._THUMB_SIZE, self._THUMB_SIZE,
+                                        Qt.AspectRatioMode.KeepAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+                self.adjustSize()
+                break
+
+    def place_near(self, pos, canvas_size) -> None:
+        """Position the tooltip near *pos* (QPoint), keeping it on screen."""
+        x, y = pos.x() + 16, pos.y() + 16
+        if x + self.width()  > canvas_size.width():
+            x = pos.x() - self.width() - 8
+        if y + self.height() > canvas_size.height():
+            y = pos.y() - self.height() - 8
+        self.move(max(0, x), max(0, y))
+
+
+# ---------------------------------------------------------------------------
+# MapWidget
+# ---------------------------------------------------------------------------
+
 class MapWidget(QWidget):
     """Widget for displaying activity tracks on a native slippy map."""
 
@@ -71,10 +198,10 @@ class MapWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._provider_name: str = 'OpenStreetMap'
-
-        # Last render state for re-render on tile change
-        # ('empty', None) | ('activities', list) | ('single', activity) | ('tracks', list)
         self._last_render: Tuple = ('empty', None)
+        self._thumb_cache: dict = {}          # url → QPixmap
+        self._hovered_step: Optional[TripStep] = None
+        self._thumb_loader: Optional[_ThumbLoader] = None
 
         self._setup_ui()
         self._create_empty_map()
@@ -323,12 +450,32 @@ class MapWidget(QWidget):
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(4, 2, 4, 2)
+        toolbar_layout.setSpacing(6)
         toolbar_layout.addWidget(QLabel("Tiles:"))
         self._tile_combo = QComboBox()
         for display_name in _TILE_OPTIONS:
             self._tile_combo.addItem(display_name)
         self._tile_combo.currentTextChanged.connect(self._on_tile_changed)
         toolbar_layout.addWidget(self._tile_combo)
+
+        toolbar_layout.addWidget(QLabel("  Points:"))
+        self._circle_slider = QSlider(Qt.Orientation.Horizontal)
+        self._circle_slider.setRange(2, 14)
+        self._circle_slider.setValue(6)
+        self._circle_slider.setFixedWidth(70)
+        self._circle_slider.setToolTip("Activity start/end point size")
+        self._circle_slider.valueChanged.connect(self._on_circle_slider)
+        toolbar_layout.addWidget(self._circle_slider)
+
+        toolbar_layout.addWidget(QLabel("  Icons:"))
+        self._icon_slider = QSlider(Qt.Orientation.Horizontal)
+        self._icon_slider.setRange(8, 28)
+        self._icon_slider.setValue(16)
+        self._icon_slider.setFixedWidth(70)
+        self._icon_slider.setToolTip("Transport segment & waypoint icon size")
+        self._icon_slider.valueChanged.connect(self._on_icon_slider)
+        toolbar_layout.addWidget(self._icon_slider)
+
         toolbar_layout.addStretch()
         outer.addWidget(toolbar)
 
@@ -340,10 +487,61 @@ class MapWidget(QWidget):
         self._canvas = MapCanvas(mem_cache=mem_cache, disk_cache=disk_cache,
                                  provider=self._provider_name)
         self._canvas.marker_clicked.connect(self._on_canvas_marker_clicked)
+        self._canvas.waypoint_hovered.connect(self._on_waypoint_hovered)
         outer.addWidget(self._canvas)
 
-        # Waypoint lookup used by marker click handler
+        # Hover tooltip (child of canvas so it overlays correctly)
+        self._tooltip = _WaypointTooltip(self._canvas)
+
+        # Waypoint lookup used by marker click/hover handlers
         self._waypoint_map: dict = {}
+
+    def _on_circle_slider(self, value: int) -> None:
+        self._canvas.set_circle_radius(float(value))
+
+    def _on_icon_slider(self, value: int) -> None:
+        self._canvas.set_icon_radius(float(value))
+
+    def _on_waypoint_hovered(self, marker) -> None:
+        if marker is None:
+            self._tooltip.hide()
+            self._hovered_step = None
+            return
+
+        step = self._waypoint_map.get(marker.waypoint_id)
+        if step is None:
+            self._tooltip.hide()
+            return
+
+        self._hovered_step = step
+        self._tooltip.set_step(step, self._thumb_cache)
+        cursor_pos = self._canvas.mapFromGlobal(
+            self._canvas.cursor().pos()
+        )
+        self._tooltip.place_near(cursor_pos, self._canvas.size())
+        self._tooltip.show()
+        self._tooltip.raise_()
+
+        # Kick off thumbnail loading for any uncached photos
+        uncached = [
+            photo.thumb_url or photo.url
+            for photo in step.photos[:5]
+            if (photo.thumb_url or photo.url) and (photo.thumb_url or photo.url) not in self._thumb_cache
+        ]
+        if uncached:
+            if self._thumb_loader and self._thumb_loader.isRunning():
+                self._thumb_loader.terminate()
+            self._thumb_loader = _ThumbLoader(uncached)
+            self._thumb_loader.loaded.connect(self._on_thumb_loaded)
+            self._thumb_loader.start()
+
+    def _on_thumb_loaded(self, url: str, px) -> None:
+        if px:
+            self._thumb_cache[url] = px
+            if self._hovered_step and self._tooltip.isVisible():
+                self._tooltip.update_thumb(url, px, self._hovered_step)
+        else:
+            self._thumb_cache[url] = None  # mark as tried
 
     def _on_tile_changed(self, display_name: str) -> None:
         provider = _TILE_OPTIONS.get(display_name)

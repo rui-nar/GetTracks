@@ -290,6 +290,10 @@ class FetchPolarstepsStepsWorker(QThread):
                             lat=media.lat,
                             lon=media.lon,
                         ))
+                    # Skip steps with no content (no description AND no photos)
+                    if not (step.description or "").strip() and not photos:
+                        continue
+
                     date = (
                         datetime.fromtimestamp(step.start_time, tz=timezone.utc)
                         if step.start_time
