@@ -10,8 +10,9 @@ from typing import List, Optional
 @dataclass
 class StepPhoto:
     """A single photo attached to a Polarsteps step."""
-    url: str                          # Full-resolution CDN URL
-    thumb_url: str = ""               # small_thumbnail_path
+    url: str                          # Full-resolution CDN URL (may be 403)
+    thumb_url: str = ""               # small_thumbnail_path (publicly accessible)
+    large_thumb_url: str = ""         # large_thumbnail_path (publicly accessible)
     caption: str = ""
     lat: Optional[float] = None
     lon: Optional[float] = None
@@ -20,6 +21,7 @@ class StepPhoto:
         return {
             "url": self.url,
             "thumb_url": self.thumb_url,
+            "large_thumb_url": self.large_thumb_url,
             "caption": self.caption,
             "lat": self.lat,
             "lon": self.lon,
@@ -30,10 +32,15 @@ class StepPhoto:
         return cls(
             url=d.get("url", ""),
             thumb_url=d.get("thumb_url", ""),
+            large_thumb_url=d.get("large_thumb_url", ""),
             caption=d.get("caption", ""),
             lat=d.get("lat"),
             lon=d.get("lon"),
         )
+
+    def best_url(self) -> str:
+        """Return the best accessible URL: large thumbnail, then small, then full-res."""
+        return self.large_thumb_url or self.thumb_url or self.url
 
 
 @dataclass

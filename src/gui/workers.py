@@ -279,13 +279,20 @@ class FetchPolarstepsStepsWorker(QThread):
                         continue
                     if not step.location or step.location.lat is None or step.location.lon is None:
                         continue
+                    _CDN = "https://cdn.polarsteps.com"
                     photos = []
                     for media in (step.media or []):
                         if media.is_deleted or not media.cdn_path:
                             continue
+                        def _full(path: Optional[str]) -> str:
+                            if not path:
+                                return ""
+                            return path if path.startswith("http") else f"{_CDN}{path}"
+
                         photos.append(StepPhoto(
-                            url=media.cdn_path,
-                            thumb_url=media.small_thumbnail_path or "",
+                            url=_full(media.cdn_path),
+                            thumb_url=_full(media.small_thumbnail_path),
+                            large_thumb_url=_full(media.large_thumbnail_path),
                             caption=media.description or "",
                             lat=media.lat,
                             lon=media.lon,

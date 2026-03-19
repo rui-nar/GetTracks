@@ -113,9 +113,14 @@ class MapCanvas(QWidget):
         self._marker_hit_areas: List[Tuple[QPointF, Marker]] = []
         self._hovered_waypoint: Optional[Marker] = None
 
-        # Configurable sizes (changed via sliders)
-        self._circle_radius: float = 6.0    # plain start/end dots
-        self._icon_radius:   float = 10.0   # transport + waypoint badges
+        # Configurable sizes and colours (changed via Appearance dialog)
+        self._circle_radius:    float = 6.0    # plain start/end dots
+        self._transport_radius: float = 10.0   # transport icon badges
+        self._waypoint_radius:  float = 10.0   # waypoint camera pins
+        # Optional colour overrides (None = use per-marker colour)
+        self._circle_color:    Optional["QColor"] = None
+        self._transport_color: Optional["QColor"] = None
+        self._waypoint_color:  Optional["QColor"] = None   # None → default amber
 
         # Tile pixmap cache  (tile_zoom, tx, ty) → QPixmap
         self._pixmap_cache: dict[Tuple[int, int, int], QPixmap] = {}
@@ -219,9 +224,29 @@ class MapCanvas(QWidget):
         self._circle_radius = max(1.0, r)
         self.update()
 
-    def set_icon_radius(self, r: float) -> None:
-        self._icon_radius = max(3.0, r)
+    def set_circle_color(self, c: Optional["QColor"]) -> None:
+        self._circle_color = c
         self.update()
+
+    def set_transport_radius(self, r: float) -> None:
+        self._transport_radius = max(3.0, r)
+        self.update()
+
+    def set_transport_color(self, c: Optional["QColor"]) -> None:
+        self._transport_color = c
+        self.update()
+
+    def set_waypoint_radius(self, r: float) -> None:
+        self._waypoint_radius = max(3.0, r)
+        self.update()
+
+    def set_waypoint_color(self, c: Optional["QColor"]) -> None:
+        self._waypoint_color = c
+        self.update()
+
+    # backwards-compat alias
+    def set_icon_radius(self, r: float) -> None:
+        self.set_transport_radius(r)
 
     def set_provider(self, provider: str) -> None:
         self._provider.set_provider(provider)
@@ -369,7 +394,7 @@ class MapCanvas(QWidget):
         pos = QPointF(event.pos())
         hovered: Optional[Marker] = None
         for hit_pos, marker in self._marker_hit_areas:
-            if _dist(pos, hit_pos) <= (self._icon_radius + 4.0):
+            if _dist(pos, hit_pos) <= (self._waypoint_radius + 4.0):
                 hovered = marker
                 break
         if hovered is not self._hovered_waypoint:
@@ -508,8 +533,6 @@ class MapCanvas(QWidget):
             for i in range(len(pts) - 1):
                 p.drawLine(pts[i], pts[i + 1])
 
-    _WAYPOINT_COLOR = QColor("#FF8F00")  # amber
-
     def _draw_markers(self, p: QPainter) -> None:
         if not self._markers:
             return
@@ -527,23 +550,25 @@ class MapCanvas(QWidget):
             screen_pos = QPointF(sx, sy)
 
             if m.marker_type == "waypoint":
-                badge_r = self._icon_radius + 2.0
-                amber = self._WAYPOINT_COLOR
+                badge_r = self._waypoint_radius + 2.0
+                wp_color = self._waypoint_color or QColor("#FF8F00")
                 p.setBrush(QColor("white"))
-                p.setPen(QPen(amber, 2.5))
+                p.setPen(QPen(wp_color, 2.5))
                 p.drawEllipse(screen_pos, badge_r, badge_r)
-                draw_waypoint_icon(p, sx, sy, badge_r * 1.55, amber)
+                draw_waypoint_icon(p, sx, sy, badge_r * 1.55, wp_color)
                 hit_areas.append((screen_pos, m))
             elif m.icon:
-                badge_r = self._icon_radius
+                badge_r = self._transport_radius
+                icon_color = self._transport_color or m.color
                 p.setBrush(QColor("white"))
-                p.setPen(QPen(m.color, 2.5))
+                p.setPen(QPen(icon_color, 2.5))
                 p.drawEllipse(screen_pos, badge_r, badge_r)
-                draw_transport_icon(p, sx, sy, badge_r * 1.55, m.icon, m.color)
+                draw_transport_icon(p, sx, sy, badge_r * 1.55, m.icon, icon_color)
             else:
                 r = self._circle_radius
-                p.setBrush(m.color)
-                p.setPen(QPen(m.color.lighter(150), 1))
+                dot_color = self._circle_color or m.color
+                p.setBrush(dot_color)
+                p.setPen(QPen(dot_color.lighter(150), 1))
                 p.drawEllipse(screen_pos, r, r)
 
         self._marker_hit_areas = hit_areas

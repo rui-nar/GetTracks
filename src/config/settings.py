@@ -84,7 +84,7 @@ class Config:
         try:
             with open(_USER_SETTINGS_PATH, "r") as f:
                 user = json.load(f)
-            for block in ("strava", "polarsteps"):
+            for block in ("strava", "polarsteps", "appearance"):
                 if block in user and isinstance(user[block], dict):
                     if block not in self._config:
                         self._config[block] = {}
@@ -93,21 +93,55 @@ class Config:
             pass
 
     def save_user_settings(self) -> None:
-        """Persist Strava and Polarsteps credentials to ~/.config/GetTracks/settings.json."""
+        """Persist credentials and appearance settings to ~/.config/GetTracks/settings.json."""
         _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "strava": {
-                "client_id": self.get("strava.client_id", ""),
-                "client_secret": self.get("strava.client_secret", ""),
-                "redirect_uri": self.get("strava.redirect_uri", "http://localhost:8000/callback"),
-            },
-            "polarsteps": {
-                "username": self.get("polarsteps.username", ""),
-                "remember_token": self.get("polarsteps.remember_token", ""),
-            },
+        # Read existing file so we don't clobber blocks we don't own
+        existing: Dict[str, Any] = {}
+        if _USER_SETTINGS_PATH.exists():
+            try:
+                with open(_USER_SETTINGS_PATH, "r") as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        existing["strava"] = {
+            "client_id": self.get("strava.client_id", ""),
+            "client_secret": self.get("strava.client_secret", ""),
+            "redirect_uri": self.get("strava.redirect_uri", "http://localhost:8000/callback"),
+        }
+        existing["polarsteps"] = {
+            "username": self.get("polarsteps.username", ""),
+            "remember_token": self.get("polarsteps.remember_token", ""),
         }
         with open(_USER_SETTINGS_PATH, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(existing, f, indent=2)
+
+    def get_appearance(self) -> Dict[str, Any]:
+        """Return appearance settings with defaults."""
+        return {
+            "tile_provider":    self.get("appearance.tile_provider", "OpenStreetMap"),
+            "transport_radius": float(self.get("appearance.transport_radius", 10)),
+            "transport_color":  self.get("appearance.transport_color", None),
+            "circle_radius":    float(self.get("appearance.circle_radius", 6)),
+            "circle_color":     self.get("appearance.circle_color", None),
+            "waypoint_radius":  float(self.get("appearance.waypoint_radius", 10)),
+            "waypoint_color":   self.get("appearance.waypoint_color", "#FF8F00"),
+        }
+
+    def save_appearance_settings(self, d: Dict[str, Any]) -> None:
+        """Persist appearance settings to ~/.config/GetTracks/settings.json."""
+        for k, v in d.items():
+            self.set(f"appearance.{k}", v)
+        _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing: Dict[str, Any] = {}
+        if _USER_SETTINGS_PATH.exists():
+            try:
+                with open(_USER_SETTINGS_PATH, "r") as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        existing["appearance"] = dict(d)
+        with open(_USER_SETTINGS_PATH, "w") as f:
+            json.dump(existing, f, indent=2)
 
     def save(self) -> None:
         """Save current configuration to file."""

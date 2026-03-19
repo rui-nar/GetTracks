@@ -16,21 +16,32 @@ from src.models.waypoint import StepPhoto
 
 
 class _FullResLoader(QThread):
-    loaded = pyqtSignal(object)  # QPixmap | None
+    loaded = pyqtSignal(object)  # bytes | None  (QPixmap created on main thread)
+    error  = pyqtSignal(str)     # last error message if all URLs failed
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, urls: list, headers: dict) -> None:
         super().__init__()
-        self._url = url
+        self._urls = [u for u in urls if u]
+        self._headers = headers
 
     def run(self) -> None:
-        try:
-            with urllib.request.urlopen(self._url, timeout=20) as resp:
-                data = resp.read()
-            px = QPixmap()
-            px.loadFromData(data)
-            self.loaded.emit(px if not px.isNull() else None)
-        except Exception:
-            self.loaded.emit(None)
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        last_err = ""
+        for url in self._urls:
+            try:
+                req = urllib.request.Request(url, headers=self._headers)
+                with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
+                    data = resp.read()
+                self.loaded.emit(data)
+                return
+            except Exception as exc:
+                last_err = f"{type(exc).__name__}: {exc}"
+        self.loaded.emit(None)
+        if last_err:
+            self.error.emit(last_err)
 
 
 class PhotoViewerDialog(QDialog):
@@ -41,11 +52,13 @@ class PhotoViewerDialog(QDialog):
         photos: List[StepPhoto],
         start_index: int = 0,
         parent: Optional[QWidget] = None,
+        request_headers: Optional[dict] = None,
     ) -> None:
         super().__init__(parent)
         self._photos = photos
         self._index = max(0, min(start_index, len(photos) - 1))
         self._loader: Optional[_FullResLoader] = None
+        self._request_headers: dict = request_headers or {}
 
         self.setWindowTitle("Photo")
         self.setModal(True)
@@ -146,17 +159,27 @@ class PhotoViewerDialog(QDialog):
             self._loader.terminate()
             self._loader.wait()
 
-        url = photo.url or photo.thumb_url
-        if not url:
+        # Try all available URLs in priority order (large thumb → small → full-res)
+        urls = [photo.large_thumb_url, photo.thumb_url, photo.url]
+        if not any(urls):
             self._photo_label.setText("No image available")
             return
 
-        self._loader = _FullResLoader(url)
+        self._loader = _FullResLoader(urls, self._request_headers)
         self._loader.loaded.connect(self._on_loaded)
+        self._loader.error.connect(self._on_load_error)
         self._loader.start()
 
-    def _on_loaded(self, px: Optional[QPixmap]) -> None:
-        if px is None:
+    def _on_load_error(self, msg: str) -> None:
+        self._photo_label.setText(f"Failed to load image\n{msg}")
+
+    def _on_loaded(self, data) -> None:
+        if not data:
+            self._photo_label.setText("Failed to load image")
+            return
+        px = QPixmap()
+        px.loadFromData(data)
+        if px.isNull():
             self._photo_label.setText("Failed to load image")
             return
         self._current_pixmap = px

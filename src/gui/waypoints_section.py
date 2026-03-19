@@ -103,6 +103,10 @@ class WaypointsSectionWidget(QWidget):
         self._toggle_btn.setText(label)
 
     def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        # Only navigate to a waypoint on a plain single-click; Shift/Ctrl multi-select
+        # must not collapse the selection by triggering highlight().
+        if len(self._list.selectedItems()) != 1:
+            return
         step = item.data(Qt.ItemDataRole.UserRole)
         if step is not None:
             self.waypoint_selected.emit(step)
@@ -131,5 +135,9 @@ class WaypointsSectionWidget(QWidget):
         if obj is self._list and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 self._remove_selected()
+                return True
+            if (event.key() == Qt.Key.Key_A and
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self._list.selectAll()
                 return True
         return super().eventFilter(obj, event)

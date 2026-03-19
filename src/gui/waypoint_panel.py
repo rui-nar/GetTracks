@@ -19,25 +19,29 @@ from src.models.waypoint import StepPhoto, TripStep
 # ---------------------------------------------------------------------------
 
 class _ThumbnailLoader(QThread):
-    loaded = pyqtSignal(int, object)   # index, QPixmap | None
+    loaded = pyqtSignal(int, object)   # index, bytes | None
 
-    def __init__(self, photos: List[StepPhoto]) -> None:
+    def __init__(self, photos: List[StepPhoto], headers: dict) -> None:
         super().__init__()
         self._photos = photos
+        self._headers = headers
 
     def run(self) -> None:
+        import ssl
         import urllib.request
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         for i, photo in enumerate(self._photos):
-            url = photo.thumb_url or photo.url
+            url = photo.thumb_url or photo.url  # small thumb for panel strip
             if not url:
                 self.loaded.emit(i, None)
                 continue
             try:
-                with urllib.request.urlopen(url, timeout=10) as resp:
+                req = urllib.request.Request(url, headers=self._headers)
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                     data = resp.read()
-                px = QPixmap()
-                px.loadFromData(data)
-                self.loaded.emit(i, px if not px.isNull() else None)
+                self.loaded.emit(i, data)  # emit bytes; QPixmap created on main thread
             except Exception:
                 self.loaded.emit(i, None)
 
@@ -81,12 +85,16 @@ class _ThumbLabel(QLabel):
 class WaypointPanel(QWidget):
     """Shows a TripStep's name, date, description, and clickable photo thumbnails."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, request_headers: Optional[dict] = None) -> None:
         super().__init__(parent)
         self._loader: Optional[_ThumbnailLoader] = None
         self._thumb_labels: List[_ThumbLabel] = []
         self._current_step: Optional[TripStep] = None
+        self._request_headers: dict = request_headers or {}
         self._build_ui()
+
+    def set_request_headers(self, headers: dict) -> None:
+        self._request_headers = headers
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -171,7 +179,7 @@ class WaypointPanel(QWidget):
 
             if self._loader and self._loader.isRunning():
                 self._loader.terminate()
-            self._loader = _ThumbnailLoader(step.photos)
+            self._loader = _ThumbnailLoader(step.photos, self._request_headers)
             self._loader.loaded.connect(self._on_thumb_loaded)
             self._loader.start()
 
@@ -190,22 +198,28 @@ class WaypointPanel(QWidget):
     # Handlers
     # ------------------------------------------------------------------
 
-    def _on_thumb_loaded(self, index: int, pixmap: Optional[QPixmap]) -> None:
+    def _on_thumb_loaded(self, index: int, data) -> None:
         if index >= len(self._thumb_labels):
             return
         lbl = self._thumb_labels[index]
-        if pixmap and not pixmap.isNull():
-            lbl.setPixmap(pixmap.scaled(
-                86, 86,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            ))
-        else:
-            lbl.setText("?")
+        if data:
+            px = QPixmap()
+            px.loadFromData(data)
+            if not px.isNull():
+                lbl.setPixmap(px.scaled(
+                    86, 86,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ))
+                return
+        lbl.setText("?")
 
     def _on_thumb_clicked(self, index: int) -> None:
         if self._current_step is None or not self._current_step.photos:
             return
         from src.gui.photo_viewer_dialog import PhotoViewerDialog
-        dlg = PhotoViewerDialog(self._current_step.photos, start_index=index, parent=self)
+        dlg = PhotoViewerDialog(
+            self._current_step.photos, start_index=index,
+            parent=self, request_headers=self._request_headers,
+        )
         dlg.exec()

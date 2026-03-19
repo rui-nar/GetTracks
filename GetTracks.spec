@@ -30,8 +30,16 @@ a = Analysis(
         "src.gpx",
         "src.gui",
         "src.models",
+        "src.polarsteps_api",
+        "src.polarsteps_api.models",
+        "src.project",
         "src.utils",
         "src.visualization",
+        # Pydantic (Polarsteps API models)
+        "pydantic",
+        "pydantic.v1",
+        "pydantic_settings",
+        "cachetools",
         # PyQt6 networking (tile fetching)
         "PyQt6.QtNetwork",
         # Strava / OAuth

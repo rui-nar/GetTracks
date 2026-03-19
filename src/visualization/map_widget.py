@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import pyqtSignal, Qt, QSize, QThread
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-    QSlider, QFrame, QScrollArea, QSizePolicy,
+    QWidget, QVBoxLayout, QFrame, QScrollArea, QSizePolicy,
+    QLabel, QHBoxLayout,
 )
 from PyQt6.QtGui import QColor, QPixmap, QFont
 
@@ -71,24 +71,28 @@ _TILE_CACHE_DIR = os.path.join(
 # ---------------------------------------------------------------------------
 
 class _ThumbLoader(QThread):
-    loaded = pyqtSignal(str, object)  # url, QPixmap | None
+    loaded = pyqtSignal(str, object)  # url, bytes | None  (QPixmap created on main thread)
 
-    def __init__(self, urls: list) -> None:
+    def __init__(self, urls: list, headers: dict) -> None:
         super().__init__()
         self._urls = urls
+        self._headers = headers
 
     def run(self) -> None:
+        import ssl
         import urllib.request
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         for url in self._urls:
             if not url:
                 self.loaded.emit(url, None)
                 continue
             try:
-                with urllib.request.urlopen(url, timeout=8) as resp:
+                req = urllib.request.Request(url, headers=self._headers)
+                with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
                     data = resp.read()
-                px = QPixmap()
-                px.loadFromData(data)
-                self.loaded.emit(url, px if not px.isNull() else None)
+                self.loaded.emit(url, data)
             except Exception:
                 self.loaded.emit(url, None)
 
@@ -202,9 +206,15 @@ class MapWidget(QWidget):
         self._thumb_cache: dict = {}          # url → QPixmap
         self._hovered_step: Optional[TripStep] = None
         self._thumb_loader: Optional[_ThumbLoader] = None
+        self._request_headers: dict = {}
 
         self._setup_ui()
         self._create_empty_map()
+
+    def set_request_headers(self, headers: dict) -> None:
+        """Set HTTP headers used when fetching waypoint photo thumbnails."""
+        self._request_headers = headers
+        self._thumb_cache.clear()  # invalidate cache; headers may have changed
 
     # ------------------------------------------------------------------
     # Public API  (same signatures as the old Folium MapWidget)
@@ -446,39 +456,6 @@ class MapWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Tile selector toolbar
-        toolbar = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(4, 2, 4, 2)
-        toolbar_layout.setSpacing(6)
-        toolbar_layout.addWidget(QLabel("Tiles:"))
-        self._tile_combo = QComboBox()
-        for display_name in _TILE_OPTIONS:
-            self._tile_combo.addItem(display_name)
-        self._tile_combo.currentTextChanged.connect(self._on_tile_changed)
-        toolbar_layout.addWidget(self._tile_combo)
-
-        toolbar_layout.addWidget(QLabel("  Points:"))
-        self._circle_slider = QSlider(Qt.Orientation.Horizontal)
-        self._circle_slider.setRange(2, 14)
-        self._circle_slider.setValue(6)
-        self._circle_slider.setFixedWidth(70)
-        self._circle_slider.setToolTip("Activity start/end point size")
-        self._circle_slider.valueChanged.connect(self._on_circle_slider)
-        toolbar_layout.addWidget(self._circle_slider)
-
-        toolbar_layout.addWidget(QLabel("  Icons:"))
-        self._icon_slider = QSlider(Qt.Orientation.Horizontal)
-        self._icon_slider.setRange(4, 24)
-        self._icon_slider.setValue(10)
-        self._icon_slider.setFixedWidth(70)
-        self._icon_slider.setToolTip("Transport segment & waypoint icon size")
-        self._icon_slider.valueChanged.connect(self._on_icon_slider)
-        toolbar_layout.addWidget(self._icon_slider)
-
-        toolbar_layout.addStretch()
-        outer.addWidget(toolbar)
-
         # Shared caches
         mem_cache  = MemoryTileCache(max_size=512)
         disk_cache = DiskTileCache(_TILE_CACHE_DIR)
@@ -496,11 +473,54 @@ class MapWidget(QWidget):
         # Waypoint lookup used by marker click/hover handlers
         self._waypoint_map: dict = {}
 
-    def _on_circle_slider(self, value: int) -> None:
-        self._canvas.set_circle_radius(float(value))
+    # ------------------------------------------------------------------
+    # Appearance API (called by AppearanceDialog and _apply_appearance_settings)
+    # ------------------------------------------------------------------
 
-    def _on_icon_slider(self, value: int) -> None:
-        self._canvas.set_icon_radius(float(value))
+    def set_tile_provider(self, provider_key: str) -> None:
+        if provider_key and provider_key != self._provider_name:
+            self._provider_name = provider_key
+            self._canvas.set_provider(provider_key)
+            self._re_render()
+
+    def get_tile_provider(self) -> str:
+        return self._provider_name
+
+    def set_circle_radius(self, r: float) -> None:
+        self._canvas.set_circle_radius(r)
+
+    def get_circle_radius(self) -> float:
+        return self._canvas._circle_radius
+
+    def set_circle_color(self, c: Optional[QColor]) -> None:
+        self._canvas.set_circle_color(c)
+
+    def get_circle_color(self) -> Optional[QColor]:
+        return self._canvas._circle_color
+
+    def set_transport_radius(self, r: float) -> None:
+        self._canvas.set_transport_radius(r)
+
+    def get_transport_radius(self) -> float:
+        return self._canvas._transport_radius
+
+    def set_transport_color(self, c: Optional[QColor]) -> None:
+        self._canvas.set_transport_color(c)
+
+    def get_transport_color(self) -> Optional[QColor]:
+        return self._canvas._transport_color
+
+    def set_waypoint_radius(self, r: float) -> None:
+        self._canvas.set_waypoint_radius(r)
+
+    def get_waypoint_radius(self) -> float:
+        return self._canvas._waypoint_radius
+
+    def set_waypoint_color(self, c: Optional[QColor]) -> None:
+        self._canvas.set_waypoint_color(c)
+
+    def get_waypoint_color(self) -> Optional[QColor]:
+        return self._canvas._waypoint_color
 
     def _on_waypoint_hovered(self, marker) -> None:
         if marker is None:
@@ -531,24 +551,20 @@ class MapWidget(QWidget):
         if uncached:
             if self._thumb_loader and self._thumb_loader.isRunning():
                 self._thumb_loader.terminate()
-            self._thumb_loader = _ThumbLoader(uncached)
+            self._thumb_loader = _ThumbLoader(uncached, self._request_headers)
             self._thumb_loader.loaded.connect(self._on_thumb_loaded)
             self._thumb_loader.start()
 
-    def _on_thumb_loaded(self, url: str, px) -> None:
-        if px:
-            self._thumb_cache[url] = px
-            if self._hovered_step and self._tooltip.isVisible():
-                self._tooltip.update_thumb(url, px, self._hovered_step)
-        else:
-            self._thumb_cache[url] = None  # mark as tried
-
-    def _on_tile_changed(self, display_name: str) -> None:
-        provider = _TILE_OPTIONS.get(display_name)
-        if provider and provider != self._provider_name:
-            self._provider_name = provider
-            self._canvas.set_provider(provider)
-            self._re_render()
+    def _on_thumb_loaded(self, url: str, data) -> None:
+        if data:
+            px = QPixmap()
+            px.loadFromData(data)
+            if not px.isNull():
+                self._thumb_cache[url] = px
+                if self._hovered_step and self._tooltip.isVisible():
+                    self._tooltip.update_thumb(url, px, self._hovered_step)
+                return
+        self._thumb_cache[url] = None  # mark as tried
 
     def _re_render(self) -> None:
         kind, data = self._last_render

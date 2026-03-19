@@ -264,6 +264,10 @@ class MainWindow(QMainWindow):
         self.status_bar.addWidget(self.status_icon, 0)
         self.status_bar.addWidget(self.status_text, 1)
 
+        # Apply persisted appearance settings now that map_widget exists
+        self._apply_appearance_settings()
+        self._apply_polarsteps_auth()
+
     def resizeEvent(self, event):
         """Reposition toasts when the window is resized."""
         super().resizeEvent(event)
@@ -332,6 +336,10 @@ class MainWindow(QMainWindow):
         act_ps_cfg = QAction("Polarsteps Connection…", self)
         act_ps_cfg.triggered.connect(self._open_polarsteps_settings)
         settings_menu.addAction(act_ps_cfg)
+        settings_menu.addSeparator()
+        act_appearance = QAction("Appearance…", self)
+        act_appearance.triggered.connect(self._open_appearance)
+        settings_menu.addAction(act_appearance)
 
         # Add track menu
         import_menu = mb.addMenu("&Add track")
@@ -453,6 +461,37 @@ class MainWindow(QMainWindow):
         dlg = PolarstepsSettingsDialog(self.config, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._update_polarsteps_action_state()
+            self._apply_polarsteps_auth()
+
+    def _open_appearance(self) -> None:
+        from src.gui.appearance_dialog import AppearanceDialog
+        dlg = AppearanceDialog(self.map_widget, self.config, self)
+        dlg.exec()
+
+    def _apply_polarsteps_auth(self) -> None:
+        """Build request headers from stored Polarsteps token and push to photo loaders."""
+        token = self.config.get("polarsteps.remember_token", "")
+        headers: dict = {"User-Agent": "Mozilla/5.0"}
+        if token:
+            headers["Cookie"] = f"remember_token={token}"
+        self.map_widget.set_request_headers(headers)
+        self.waypoint_panel.set_request_headers(headers)
+
+    def _apply_appearance_settings(self) -> None:
+        """Apply persisted appearance settings to the map widget on startup."""
+        from PyQt6.QtGui import QColor as _QColor
+        a = self.config.get_appearance()
+        self.map_widget.set_tile_provider(a["tile_provider"])
+        self.map_widget.set_transport_radius(a["transport_radius"])
+        self.map_widget.set_transport_color(
+            _QColor(a["transport_color"]) if a["transport_color"] else None
+        )
+        self.map_widget.set_circle_radius(a["circle_radius"])
+        self.map_widget.set_circle_color(
+            _QColor(a["circle_color"]) if a["circle_color"] else None
+        )
+        self.map_widget.set_waypoint_radius(a["waypoint_radius"])
+        self.map_widget.set_waypoint_color(_QColor(a["waypoint_color"]))
 
     def _import_from_polarsteps(self) -> None:
         project = self._project_manager.project
@@ -492,6 +531,12 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         remove_ids = {s.id for s in steps}
+        # If the waypoint panel is currently showing one of the removed steps, clear it
+        if self._details_stack.currentIndex() == 1:
+            current = self.waypoint_panel._current_step
+            if current is not None and current.id in remove_ids:
+                self.waypoint_panel.clear()
+                self._show_activity_details()
         project.waypoints = [w for w in project.waypoints if w.id not in remove_ids]
         self._project_manager.mark_dirty()
         self._refresh_waypoints_section()
