@@ -63,8 +63,8 @@ class User(BaseModel):
     country_count_public: Optional[int] = 0
     country_count_followers: Optional[int] = 0
     has_multiple_devices: Optional[bool] = False
-    fb_id: Optional[str] = None
-    google_id: Optional[str] = None
+    fb_id: Optional[Union[str, int]] = None
+    google_id: Optional[Union[str, int]] = None
     last_modified: Optional[float] = None
     synchronized: Optional[bool] = None
     mashup: Optional[Union[bool, dict[str, Any]]] = None
