@@ -469,8 +469,8 @@ class MapWidget(QWidget):
 
         toolbar_layout.addWidget(QLabel("  Icons:"))
         self._icon_slider = QSlider(Qt.Orientation.Horizontal)
-        self._icon_slider.setRange(8, 28)
-        self._icon_slider.setValue(16)
+        self._icon_slider.setRange(4, 24)
+        self._icon_slider.setValue(10)
         self._icon_slider.setFixedWidth(70)
         self._icon_slider.setToolTip("Transport segment & waypoint icon size")
         self._icon_slider.valueChanged.connect(self._on_icon_slider)

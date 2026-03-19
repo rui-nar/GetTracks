@@ -232,21 +232,19 @@ class MainWindow(QMainWindow):
         # Right panel - vertical splitter: details on top, map on bottom
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
+        # Details area: activity details OR waypoint panel (stacked)
+        self._details_stack = QStackedWidget()
         self.activity_details = ActivityDetailsWidget()
-        right_splitter.addWidget(self.activity_details)
-
-        # Right-panel stacked widget: elevation chart OR waypoint panel
-        self._right_stack = QStackedWidget()
-        self._right_stack.setFixedHeight(130)
-        self._right_stack.setVisible(False)
-
-        self.elevation_chart = ElevationChart()
-        self._right_stack.addWidget(self.elevation_chart)   # index 0
-
+        self._details_stack.addWidget(self.activity_details)   # index 0
         self.waypoint_panel = WaypointPanel()
-        self._right_stack.addWidget(self.waypoint_panel)    # index 1
+        self._details_stack.addWidget(self.waypoint_panel)     # index 1
+        right_splitter.addWidget(self._details_stack)
 
-        right_splitter.addWidget(self._right_stack)
+        # Elevation chart (standalone, shown below details)
+        self.elevation_chart = ElevationChart()
+        self.elevation_chart.setFixedHeight(130)
+        self.elevation_chart.setVisible(False)
+        right_splitter.addWidget(self.elevation_chart)
 
         self.map_widget = MapWidget()
         self.map_widget.setMinimumHeight(200)
@@ -424,15 +422,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _show_elevation_panel(self, visible: bool) -> None:
-        """Switch the right stack to the elevation chart and set its visibility."""
-        self._right_stack.setCurrentIndex(0)
-        self._right_stack.setVisible(visible)
+        self.elevation_chart.setVisible(visible)
 
     def _show_waypoint_panel(self, step: TripStep) -> None:
-        """Switch the right stack to the waypoint detail panel."""
+        """Switch the details area to the waypoint panel and hide elevation."""
         self.waypoint_panel.set_step(step)
-        self._right_stack.setCurrentIndex(1)
-        self._right_stack.setVisible(True)
+        self._details_stack.setCurrentIndex(1)
+        self._show_elevation_panel(False)
+
+    def _show_activity_details(self) -> None:
+        """Switch the details area back to activity details."""
+        self._details_stack.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
     # Import menu handlers
@@ -657,6 +657,7 @@ class MainWindow(QMainWindow):
 
     def _on_multi_activity_selected(self, activities: list) -> None:
         """Show combined map + aggregated elevation for a multi-activity selection."""
+        self._show_activity_details()
         self.map_widget.setVisible(True)
         self.map_widget.display_activities(activities)
 
@@ -801,6 +802,7 @@ class MainWindow(QMainWindow):
 
     def on_activity_selected(self, activity: Activity) -> None:
         """Handle activity selection — update details, map, and elevation chart."""
+        self._show_activity_details()
         self.activity_details.set_activity(activity)
         self.map_widget.setVisible(True)
         self.map_widget.display_single_activity(activity)

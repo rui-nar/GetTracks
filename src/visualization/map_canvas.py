@@ -115,7 +115,7 @@ class MapCanvas(QWidget):
 
         # Configurable sizes (changed via sliders)
         self._circle_radius: float = 6.0    # plain start/end dots
-        self._icon_radius:   float = 16.0   # transport + waypoint badges
+        self._icon_radius:   float = 10.0   # transport + waypoint badges
 
         # Tile pixmap cache  (tile_zoom, tx, ty) → QPixmap
         self._pixmap_cache: dict[Tuple[int, int, int], QPixmap] = {}
@@ -220,7 +220,7 @@ class MapCanvas(QWidget):
         self.update()
 
     def set_icon_radius(self, r: float) -> None:
-        self._icon_radius = max(6.0, r)
+        self._icon_radius = max(3.0, r)
         self.update()
 
     def set_provider(self, provider: str) -> None:
