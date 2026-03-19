@@ -30,7 +30,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
-from src.visualization.transport_icons import draw_transport_icon
+from src.visualization.transport_icons import draw_transport_icon, draw_waypoint_icon
 from src.visualization.map_projection import (
     MIN_ZOOM, MAX_ZOOM, TILE_SIZE,
     lat_lon_to_world_px, world_px_to_lat_lon, tile_to_world_px,
@@ -62,6 +62,8 @@ class Marker:
     radius: float = 6.0
     tooltip: str = ""
     icon: str = ""   # Unicode emoji — renders as a badge instead of a plain circle
+    marker_type: str = "activity"   # "activity" | "waypoint"
+    waypoint_id: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +83,8 @@ def _dist(p1: QPointF, p2: QPointF) -> float:
 class MapCanvas(QWidget):
     """Pure-Qt interactive slippy-map canvas with fractional zoom."""
 
-    view_changed = pyqtSignal(float, float, int)   # lat, lon, zoom
+    view_changed   = pyqtSignal(float, float, int)   # lat, lon, zoom
+    marker_clicked = pyqtSignal(object)             # Marker
 
     def __init__(
         self,
@@ -105,6 +108,8 @@ class MapCanvas(QWidget):
         # Overlays
         self._polylines: List[Polyline] = []
         self._markers:   List[Marker]   = []
+        # Hit areas updated on each render: (screen_pos, Marker)
+        self._marker_hit_areas: List[Tuple[QPointF, Marker]] = []
 
         # Tile pixmap cache  (tile_zoom, tx, ty) → QPixmap
         self._pixmap_cache: dict[Tuple[int, int, int], QPixmap] = {}
@@ -333,6 +338,12 @@ class MapCanvas(QWidget):
         if self._touch_count > 0:
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            click_pos = QPointF(event.pos())
+            # Check for waypoint marker hit (20 px tolerance)
+            for pos, marker in self._marker_hit_areas:
+                if _dist(click_pos, pos) <= 20.0:
+                    self.marker_clicked.emit(marker)
+                    return
             self._drag_start = event.pos()
             cx, cy = self._center_world_px()
             self._drag_center_wx = cx
@@ -472,6 +483,8 @@ class MapCanvas(QWidget):
             for i in range(len(pts) - 1):
                 p.drawLine(pts[i], pts[i + 1])
 
+    _WAYPOINT_COLOR = QColor("#FF8F00")  # amber
+
     def _draw_markers(self, p: QPainter) -> None:
         if not self._markers:
             return
@@ -480,24 +493,36 @@ class MapCanvas(QWidget):
         cx, cy = self._center_world_px()
         W, H = self.width(), self.height()
 
+        hit_areas: List[Tuple[QPointF, Marker]] = []
+
         for m in self._markers:
             wx, wy = lat_lon_to_world_px(m.lat, m.lon, z)
             sx = (wx - cx) * s + W / 2.0
             sy = (wy - cy) * s + H / 2.0
+            screen_pos = QPointF(sx, sy)
 
-            if m.icon:
+            if m.marker_type == "waypoint":
+                badge_r = 18.0
+                amber = self._WAYPOINT_COLOR
+                p.setBrush(QColor("white"))
+                p.setPen(QPen(amber, 2.5))
+                p.drawEllipse(screen_pos, badge_r, badge_r)
+                draw_waypoint_icon(p, sx, sy, badge_r * 1.55, amber)
+                hit_areas.append((screen_pos, m))
+            elif m.icon:
                 # White circle badge with colored border
                 badge_r = 16.0
                 p.setBrush(QColor("white"))
                 p.setPen(QPen(m.color, 2.5))
-                p.drawEllipse(QPointF(sx, sy), badge_r, badge_r)
+                p.drawEllipse(screen_pos, badge_r, badge_r)
                 # Custom silhouette icon inside the badge
                 draw_transport_icon(p, sx, sy, badge_r * 1.55, m.icon, m.color)
             else:
                 p.setBrush(m.color)
                 p.setPen(QPen(m.color.lighter(150), 1))
-                p.drawEllipse(QPointF(sx, sy), m.radius, m.radius)
+                p.drawEllipse(screen_pos, m.radius, m.radius)
 
+        self._marker_hit_areas = hit_areas
         p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_attribution(self, p: QPainter) -> None:

@@ -7,6 +7,7 @@ rest of the application requires no changes.
 import os
 from typing import List, Optional, Tuple
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 from PyQt6.QtGui import QColor
 
@@ -15,6 +16,7 @@ import polyline as polyline_codec
 from src.models.activity import Activity
 from src.models.project import Project
 from src.models.track import Track
+from src.models.waypoint import TripStep
 from src.models.great_circle import great_circle_points
 from src.visualization.map_canvas import MapCanvas, Polyline, Marker
 from src.visualization.tile_cache import MemoryTileCache, DiskTileCache
@@ -63,6 +65,8 @@ _TILE_CACHE_DIR = os.path.join(
 
 class MapWidget(QWidget):
     """Widget for displaying activity tracks on a native slippy map."""
+
+    waypoint_clicked = pyqtSignal(object)  # TripStep
 
     def __init__(self) -> None:
         super().__init__()
@@ -228,6 +232,9 @@ class MapWidget(QWidget):
         else:
             self._create_empty_map()
 
+        if project.waypoints:
+            self.display_waypoints(project.waypoints)
+
     def display_activities(self, activities) -> None:
         """Render multiple activities as a combined map view (multi-selection)."""
         self._last_render = ('activities', activities)
@@ -255,6 +262,26 @@ class MapWidget(QWidget):
             self._canvas.fit_bounds(min(all_lats), max(all_lats), min(all_lons), max(all_lons))
         else:
             self._create_empty_map()
+
+    def display_waypoints(self, steps: List[TripStep]) -> None:
+        """Add amber camera-pin markers for each TripStep (does not clear other overlays)."""
+        self._waypoint_map = {s.id: s for s in steps}
+        amber = QColor("#FF8F00")
+        for step in steps:
+            self._canvas.add_marker(Marker(
+                lat=step.lat,
+                lon=step.lon,
+                color=amber,
+                tooltip=step.name,
+                marker_type="waypoint",
+                waypoint_id=step.id,
+            ))
+
+    def _on_canvas_marker_clicked(self, marker: Marker) -> None:
+        if marker.marker_type == "waypoint" and marker.waypoint_id is not None:
+            step = self._waypoint_map.get(marker.waypoint_id)
+            if step is not None:
+                self.waypoint_clicked.emit(step)
 
     def overlay_segments(self, project) -> None:
         """Add segment arc polylines/markers to the current canvas without clearing it."""
@@ -312,7 +339,11 @@ class MapWidget(QWidget):
         # Map canvas
         self._canvas = MapCanvas(mem_cache=mem_cache, disk_cache=disk_cache,
                                  provider=self._provider_name)
+        self._canvas.marker_clicked.connect(self._on_canvas_marker_clicked)
         outer.addWidget(self._canvas)
+
+        # Waypoint lookup used by marker click handler
+        self._waypoint_map: dict = {}
 
     def _on_tile_changed(self, display_name: str) -> None:
         provider = _TILE_OPTIONS.get(display_name)

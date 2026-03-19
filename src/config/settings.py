@@ -84,23 +84,27 @@ class Config:
         try:
             with open(_USER_SETTINGS_PATH, "r") as f:
                 user = json.load(f)
-            # Overlay only the strava block so user credentials take precedence
-            if "strava" in user and isinstance(user["strava"], dict):
-                if "strava" not in self._config:
-                    self._config["strava"] = {}
-                self._config["strava"].update(user["strava"])
+            for block in ("strava", "polarsteps"):
+                if block in user and isinstance(user[block], dict):
+                    if block not in self._config:
+                        self._config[block] = {}
+                    self._config[block].update(user[block])
         except (json.JSONDecodeError, OSError):
             pass
 
     def save_user_settings(self) -> None:
-        """Persist Strava credentials to ~/.config/GetTracks/settings.json."""
+        """Persist Strava and Polarsteps credentials to ~/.config/GetTracks/settings.json."""
         _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "strava": {
                 "client_id": self.get("strava.client_id", ""),
                 "client_secret": self.get("strava.client_secret", ""),
                 "redirect_uri": self.get("strava.redirect_uri", "http://localhost:8000/callback"),
-            }
+            },
+            "polarsteps": {
+                "username": self.get("polarsteps.username", ""),
+                "remember_token": self.get("polarsteps.remember_token", ""),
+            },
         }
         with open(_USER_SETTINGS_PATH, "w") as f:
             json.dump(data, f, indent=2)
@@ -163,3 +167,9 @@ class Config:
         client_id = self.get("strava.client_id")
         client_secret = self.get("strava.client_secret")
         return bool(client_id and client_secret)
+
+    def validate_polarsteps_config(self) -> bool:
+        """Return True if both Polarsteps username and remember_token are set."""
+        username = self.get("polarsteps.username")
+        token = self.get("polarsteps.remember_token")
+        return bool(username and token)
