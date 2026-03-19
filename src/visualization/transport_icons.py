@@ -561,6 +561,43 @@ def draw_swim(p: QPainter, rect: QRectF, fill: QColor) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Waypoint (Polarsteps camera) icon
+# ---------------------------------------------------------------------------
+
+def draw_waypoint(p: QPainter, rect: QRectF, fill: QColor) -> None:
+    """Camera silhouette: body rect + top-centre bump + lens circle."""
+    x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+
+    _body(p, fill)
+
+    # Camera body
+    body = QPainterPath()
+    body.addRoundedRect(QRectF(x + w*0.05, y + h*0.32, w*0.90, h*0.55), w*0.08, w*0.08)
+    p.drawPath(body)
+
+    # Viewfinder bump on top
+    bump = QPainterPath()
+    bump.addRoundedRect(QRectF(x + w*0.34, y + h*0.20, w*0.32, h*0.18), w*0.05, w*0.05)
+    p.drawPath(bump)
+
+    # Lens — white ring cutout, then fill ring
+    cx = x + w * 0.50
+    cy = y + h * 0.595
+    r_outer = w * 0.22
+    r_inner = w * 0.14
+
+    _detail(p)
+    p.drawEllipse(QPointF(cx, cy), r_outer, r_outer)
+
+    _body(p, fill)
+    p.drawEllipse(QPointF(cx, cy), r_inner, r_inner)
+
+    # Flash rectangle (top-right)
+    _detail(p)
+    p.drawRoundedRect(QRectF(x + w*0.72, y + h*0.38, w*0.16, h*0.12), w*0.03, w*0.03)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
 
@@ -578,6 +615,19 @@ _ACTIVITY_DRAW = {
     "walk": draw_walk,
     "swim": draw_swim,
 }
+
+
+def draw_waypoint_icon(
+    p: QPainter,
+    cx: float, cy: float,
+    size: float,
+    fill: QColor,
+) -> None:
+    """Draw a camera waypoint icon centered at *(cx, cy)* within a *size×size* square."""
+    half = size / 2.0
+    p.save()
+    draw_waypoint(p, QRectF(cx - half, cy - half, size, size), fill)
+    p.restore()
 
 
 def draw_transport_icon(

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 
 from src.models.activity import Activity
+from src.models.waypoint import TripStep
 
 SegmentType = Literal["train", "flight", "boat", "bus"]
 
@@ -54,6 +55,8 @@ class Project:
     filter_state: ProjectFilterState = field(default_factory=ProjectFilterState)
     # Full Strava data cached here for offline use
     activities: List[Activity] = field(default_factory=list)
+    # Polarsteps trip steps (context annotations, not journey segments)
+    waypoints: List[TripStep] = field(default_factory=list)
     # Derived lookup — rebuilt after load, not serialised
     _activity_map: Dict[int, Activity] = field(
         default_factory=dict, repr=False, compare=False
@@ -96,6 +99,20 @@ class Project:
                 self._activity_map[act.id] = act
                 existing_ids.add(act.id)
                 self.items.append(ProjectItem(item_type="activity", activity_id=act.id))
+                added += 1
+        return added
+
+    def add_waypoints(self, steps: List[TripStep]) -> int:
+        """Merge new TripSteps into the project waypoints list.
+
+        Returns the count of steps actually added (not already present by id).
+        """
+        existing_ids = {s.id for s in self.waypoints}
+        added = 0
+        for step in steps:
+            if step.id not in existing_ids:
+                self.waypoints.append(step)
+                existing_ids.add(step.id)
                 added += 1
         return added
 

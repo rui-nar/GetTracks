@@ -13,6 +13,7 @@ from src.models.project import (
     ProjectItem,
     SegmentEndpoint,
 )
+from src.models.waypoint import TripStep
 
 
 class ProjectIO:
@@ -37,6 +38,7 @@ class ProjectIO:
             },
             "items": [ProjectIO._serialise_item(i) for i in project.items],
             "activities": [a.to_strava_dict() for a in project.activities],
+            "waypoints": [s.to_dict() for s in project.waypoints],
         }
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, ensure_ascii=False)
@@ -63,12 +65,20 @@ class ProjectIO:
 
         items = [ProjectIO._deserialise_item(i) for i in data.get("items", [])]
 
+        waypoints = []
+        for raw in data.get("waypoints", []):
+            try:
+                waypoints.append(TripStep.from_dict(raw))
+            except Exception:
+                pass
+
         project = Project(
             name=data.get("name", "Untitled"),
             version=data.get("version", 1),
             items=items,
             filter_state=filter_state,
             activities=activities,
+            waypoints=waypoints,
         )
         project.rebuild_map()
         return project

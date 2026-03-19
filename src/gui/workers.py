@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import webbrowser
-from datetime import timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -12,6 +12,7 @@ from src.api.strava_client import StravaAPI
 from src.auth.callback_handler import OAuthCallbackServer
 from src.models.activity import Activity
 from src.models.track import Track, TrackPoint
+from src.models.waypoint import StepPhoto, TripStep
 
 
 class FetchActivitiesWorker(QThread):
@@ -207,3 +208,116 @@ class ElevationFetchWorker(QThread):
                 self.finished.emit([], [])
         except Exception as e:
             self.error.emit(str(e))
+
+
+class FetchPolarstepsTripsWorker(QThread):
+    """Fetch the trip list for a Polarsteps user in a background thread.
+
+    Emits a list of dicts with keys: id, name, step_count, start_date, end_date.
+    """
+
+    finished = pyqtSignal(list)   # List[dict]
+    error    = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, ps_client, username: str) -> None:
+        super().__init__()
+        self._client = ps_client
+        self._username = username
+
+    def run(self) -> None:
+        try:
+            self.progress.emit(f"Fetching trips for {self._username}…")
+            resp = self._client.get_user_by_username(self._username)
+            if not resp.is_success or resp.user is None:
+                self.error.emit(f"Could not fetch user '{self._username}' (status {resp.status_code})")
+                return
+            trips = []
+            for trip in (resp.user.alltrips or []):
+                if trip.is_deleted:
+                    continue
+                trips.append({
+                    "id": trip.id,
+                    "name": trip.name or f"Trip {trip.id}",
+                    "step_count": trip.step_count or 0,
+                    "start_date": trip.datetime_start,
+                    "end_date": trip.datetime_end,
+                })
+            self.finished.emit(trips)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class FetchPolarstepsStepsWorker(QThread):
+    """Fetch all steps for a list of selected Polarsteps trips.
+
+    Emits a list of TripStep objects on completion.
+    """
+
+    finished = pyqtSignal(list)   # List[TripStep]
+    error    = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, ps_client, trip_ids: List[int], trip_names: dict) -> None:
+        super().__init__()
+        self._client = ps_client
+        self._trip_ids = trip_ids
+        self._trip_names = trip_names  # {id: name}
+
+    def run(self) -> None:
+        all_steps: List[TripStep] = []
+        total = len(self._trip_ids)
+        for i, trip_id in enumerate(self._trip_ids, 1):
+            trip_name = self._trip_names.get(trip_id, f"Trip {trip_id}")
+            self.progress.emit(f"Fetching trip {i}/{total}: {trip_name}…")
+            try:
+                resp = self._client.get_trip(str(trip_id))
+                if not resp.is_success or resp.trip is None:
+                    continue
+                for step in (resp.trip.all_steps or []):
+                    if step.is_deleted:
+                        continue
+                    if not step.location or step.location.lat is None or step.location.lon is None:
+                        continue
+                    _CDN = "https://cdn.polarsteps.com"
+                    photos = []
+                    for media in (step.media or []):
+                        if media.is_deleted or not media.cdn_path:
+                            continue
+                        def _full(path: Optional[str]) -> str:
+                            if not path:
+                                return ""
+                            return path if path.startswith("http") else f"{_CDN}{path}"
+
+                        photos.append(StepPhoto(
+                            url=_full(media.cdn_path),
+                            thumb_url=_full(media.small_thumbnail_path),
+                            large_thumb_url=_full(media.large_thumbnail_path),
+                            caption=media.description or "",
+                            lat=media.lat,
+                            lon=media.lon,
+                        ))
+                    # Skip steps with no content (no description AND no photos)
+                    if not (step.description or "").strip() and not photos:
+                        continue
+
+                    date = (
+                        datetime.fromtimestamp(step.start_time, tz=timezone.utc)
+                        if step.start_time
+                        else datetime.now(tz=timezone.utc)
+                    )
+                    all_steps.append(TripStep(
+                        id=step.id,
+                        trip_id=trip_id,
+                        trip_name=trip_name,
+                        name=step.name or step.location.name or "",
+                        description=step.description or "",
+                        lat=step.location.lat,
+                        lon=step.location.lon,
+                        date=date,
+                        photos=photos,
+                    ))
+            except Exception as e:
+                self.error.emit(f"Failed fetching trip {trip_name}: {e}")
+                return
+        self.finished.emit(all_steps)

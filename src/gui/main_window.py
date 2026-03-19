@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QPushButton, QProgressBar,
     QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog, QInputDialog, QDialog,
+    QStackedWidget,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QColor, QPainter
@@ -31,7 +32,12 @@ from src.gui.toast import ToastManager
 from src.gui.project_list_widget import ProjectListWidget
 from src.gui.connecting_segment_dialog import AddTransportationDialog, ConnectingSegmentDialog
 from src.gui.strava_settings_dialog import StravaSettingsDialog
+from src.gui.polarsteps_settings_dialog import PolarstepsSettingsDialog
+from src.gui.polarsteps_import_dialog import PolarstepsImportDialog
+from src.gui.waypoint_panel import WaypointPanel
+from src.gui.waypoints_section import WaypointsSectionWidget
 from src.gui.workers import StreamFetchWorker, ElevationFetchWorker, BatchElevationFetchWorker
+from src.models.waypoint import TripStep
 
 
 class ActivityListWidget(QListWidget):
@@ -213,6 +219,10 @@ class MainWindow(QMainWindow):
         self.project_list = ProjectListWidget()
         left_layout.addWidget(self.project_list)
 
+        # Waypoints section (collapsible, below project list)
+        self.waypoints_section = WaypointsSectionWidget()
+        left_layout.addWidget(self.waypoints_section)
+
         # Stats bar at the bottom of the left panel
         self.stats_bar = StatsBarWidget()
         left_layout.addWidget(self.stats_bar)
@@ -222,9 +232,15 @@ class MainWindow(QMainWindow):
         # Right panel - vertical splitter: details on top, map on bottom
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
+        # Details area: activity details OR waypoint panel (stacked)
+        self._details_stack = QStackedWidget()
         self.activity_details = ActivityDetailsWidget()
-        right_splitter.addWidget(self.activity_details)
+        self._details_stack.addWidget(self.activity_details)   # index 0
+        self.waypoint_panel = WaypointPanel()
+        self._details_stack.addWidget(self.waypoint_panel)     # index 1
+        right_splitter.addWidget(self._details_stack)
 
+        # Elevation chart (standalone, shown below details)
         self.elevation_chart = ElevationChart()
         self.elevation_chart.setFixedHeight(130)
         self.elevation_chart.setVisible(False)
@@ -247,6 +263,10 @@ class MainWindow(QMainWindow):
         self.status_text = QLabel("Ready")
         self.status_bar.addWidget(self.status_icon, 0)
         self.status_bar.addWidget(self.status_text, 1)
+
+        # Apply persisted appearance settings now that map_widget exists
+        self._apply_appearance_settings()
+        self._apply_polarsteps_auth()
 
     def resizeEvent(self, event):
         """Reposition toasts when the window is resized."""
@@ -313,6 +333,13 @@ class MainWindow(QMainWindow):
         act_strava_cfg = QAction("Strava Connection…", self)
         act_strava_cfg.triggered.connect(self._open_strava_settings)
         settings_menu.addAction(act_strava_cfg)
+        act_ps_cfg = QAction("Polarsteps Connection…", self)
+        act_ps_cfg.triggered.connect(self._open_polarsteps_settings)
+        settings_menu.addAction(act_ps_cfg)
+        settings_menu.addSeparator()
+        act_appearance = QAction("Appearance…", self)
+        act_appearance.triggered.connect(self._open_appearance)
+        settings_menu.addAction(act_appearance)
 
         # Add track menu
         import_menu = mb.addMenu("&Add track")
@@ -325,6 +352,11 @@ class MainWindow(QMainWindow):
         act_gpx = QAction("From &GPX file…", self)
         act_gpx.triggered.connect(self._import_from_gpx)
         import_menu.addAction(act_gpx)
+
+        self._act_polarsteps = QAction("From &Polarsteps…", self)
+        self._act_polarsteps.triggered.connect(self._import_from_polarsteps)
+        import_menu.addAction(self._act_polarsteps)
+        self._update_polarsteps_action_state()
 
         import_menu.addSeparator()
 
@@ -393,6 +425,27 @@ class MainWindow(QMainWindow):
     # Import menu handlers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Right-panel helpers (elevation chart ↔ waypoint panel)
+    # ------------------------------------------------------------------
+
+    def _show_elevation_panel(self, visible: bool) -> None:
+        self.elevation_chart.setVisible(visible)
+
+    def _show_waypoint_panel(self, step: TripStep) -> None:
+        """Switch the details area to the waypoint panel and hide elevation."""
+        self.waypoint_panel.set_step(step)
+        self._details_stack.setCurrentIndex(1)
+        self._show_elevation_panel(False)
+
+    def _show_activity_details(self) -> None:
+        """Switch the details area back to activity details."""
+        self._details_stack.setCurrentIndex(0)
+
+    # ------------------------------------------------------------------
+    # Import menu handlers
+    # ------------------------------------------------------------------
+
     def _update_strava_action_state(self) -> None:
         self._act_strava.setEnabled(self.config.validate_strava_config())
 
@@ -400,6 +453,96 @@ class MainWindow(QMainWindow):
         dlg = StravaSettingsDialog(self.config, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._update_strava_action_state()
+
+    def _update_polarsteps_action_state(self) -> None:
+        self._act_polarsteps.setEnabled(self.config.validate_polarsteps_config())
+
+    def _open_polarsteps_settings(self) -> None:
+        dlg = PolarstepsSettingsDialog(self.config, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._update_polarsteps_action_state()
+            self._apply_polarsteps_auth()
+
+    def _open_appearance(self) -> None:
+        from src.gui.appearance_dialog import AppearanceDialog
+        dlg = AppearanceDialog(self.map_widget, self.config, self)
+        dlg.exec()
+
+    def _apply_polarsteps_auth(self) -> None:
+        """Build request headers from stored Polarsteps token and push to photo loaders."""
+        token = self.config.get("polarsteps.remember_token", "")
+        headers: dict = {"User-Agent": "Mozilla/5.0"}
+        if token:
+            headers["Cookie"] = f"remember_token={token}"
+        self.map_widget.set_request_headers(headers)
+        self.waypoint_panel.set_request_headers(headers)
+
+    def _apply_appearance_settings(self) -> None:
+        """Apply persisted appearance settings to the map widget on startup."""
+        from PyQt6.QtGui import QColor as _QColor
+        a = self.config.get_appearance()
+        self.map_widget.set_tile_provider(a["tile_provider"])
+        self.map_widget.set_transport_radius(a["transport_radius"])
+        self.map_widget.set_transport_color(
+            _QColor(a["transport_color"]) if a["transport_color"] else None
+        )
+        self.map_widget.set_circle_radius(a["circle_radius"])
+        self.map_widget.set_circle_color(
+            _QColor(a["circle_color"]) if a["circle_color"] else None
+        )
+        self.map_widget.set_waypoint_radius(a["waypoint_radius"])
+        self.map_widget.set_waypoint_color(_QColor(a["waypoint_color"]))
+
+    def _import_from_polarsteps(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        dlg = PolarstepsImportDialog(project, self.config, self)
+        dlg.import_complete.connect(self._on_polarsteps_import_complete)
+        dlg.exec()
+
+    def _on_polarsteps_import_complete(self) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        self._project_manager.mark_dirty()
+        self._refresh_waypoints_section()
+        self.map_widget.setVisible(True)
+        self.map_widget.display_project(project)
+        n = len(project.waypoints)
+        self.show_toast(f"Imported {n} waypoint{'s' if n != 1 else ''}", "success")
+
+    def _refresh_waypoints_section(self) -> None:
+        project = self._project_manager.project
+        steps = project.waypoints if project else []
+        self.waypoints_section.set_waypoints(steps)
+
+    def _on_waypoint_selected(self, step: TripStep) -> None:
+        """Handle a waypoint selection from map pin or waypoints section."""
+        self._show_waypoint_panel(step)
+        self.waypoints_section.highlight(step)
+        # Pan map to the waypoint
+        if hasattr(self.map_widget, '_canvas'):
+            self.map_widget._canvas.set_view(step.lat, step.lon,
+                                              self.map_widget._canvas._tile_zoom)
+
+    def _on_waypoints_removed(self, steps: list) -> None:
+        project = self._project_manager.project
+        if project is None:
+            return
+        remove_ids = {s.id for s in steps}
+        # If the waypoint panel is currently showing one of the removed steps, clear it
+        if self._details_stack.currentIndex() == 1:
+            current = self.waypoint_panel._current_step
+            if current is not None and current.id in remove_ids:
+                self.waypoint_panel.clear()
+                self._show_activity_details()
+        project.waypoints = [w for w in project.waypoints if w.id not in remove_ids]
+        self._project_manager.mark_dirty()
+        self._refresh_waypoints_section()
+        self.map_widget.display_project(project)
+        n = len(steps)
+        self.show_toast(f"Removed {n} waypoint{'s' if n > 1 else ''}", "info")
 
     def _import_from_strava(self) -> None:
         project = self._project_manager.project
@@ -491,6 +634,7 @@ class MainWindow(QMainWindow):
         self._exit_preview_mode()
         self._update_title()
         self.project_list.set_project(project)
+        self._refresh_waypoints_section()
         if project:
             self.stats_bar.update_stats(project.activities)
             if project.activities:
@@ -500,11 +644,11 @@ class MainWindow(QMainWindow):
             else:
                 self.map_widget.setVisible(False)
                 self.elevation_chart.clear()
-                self.elevation_chart.setVisible(False)
+                self._show_elevation_panel(False)
         else:
             self.map_widget.setVisible(False)
             self.elevation_chart.clear()
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
             self.stats_bar.update_stats([])
         self._update_export_button_state()
 
@@ -552,12 +696,13 @@ class MainWindow(QMainWindow):
             self._on_multi_activity_selected(selected_acts)
         else:
             # Only segment(s) selected — show full project map, hide elevation
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
             self.map_widget.setVisible(True)
             self.map_widget.display_project(project)
 
     def _on_multi_activity_selected(self, activities: list) -> None:
         """Show combined map + aggregated elevation for a multi-activity selection."""
+        self._show_activity_details()
         self.map_widget.setVisible(True)
         self.map_widget.display_activities(activities)
 
@@ -566,7 +711,7 @@ class MainWindow(QMainWindow):
 
         missing = [a for a in activities if not a.elevation_profile and a.id > 0]
         if missing:
-            self.elevation_chart.setVisible(True)
+            self._show_elevation_panel(True)
             self.elevation_chart.set_loading(True)
             self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
             self._batch_elev_worker.finished.connect(
@@ -593,10 +738,10 @@ class MainWindow(QMainWindow):
         if combined_dist:
             label = f"{len(activities)} activities"
             self.elevation_chart.set_data(combined_dist, combined_elev, label)
-            self.elevation_chart.setVisible(True)
+            self._show_elevation_panel(True)
         else:
             self.elevation_chart.clear()
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
 
     def _on_insert_segment_requested(self, index: int) -> None:
         project = self._project_manager.project
@@ -668,6 +813,13 @@ class MainWindow(QMainWindow):
         self.project_list.remove_item_requested.connect(self._on_remove_item_requested)
         self.project_list.edit_segment_requested.connect(self._on_edit_segment_requested)
 
+        # Waypoints section signals
+        self.waypoints_section.waypoint_selected.connect(self._on_waypoint_selected)
+        self.waypoints_section.waypoints_removed.connect(self._on_waypoints_removed)
+
+        # Map waypoint pin clicks
+        self.map_widget.waypoint_clicked.connect(self._on_waypoint_selected)
+
     def _restore_session(self) -> None:
         """Restore auth token and last open project."""
         if self.api_client.token_data:
@@ -695,6 +847,7 @@ class MainWindow(QMainWindow):
 
     def on_activity_selected(self, activity: Activity) -> None:
         """Handle activity selection — update details, map, and elevation chart."""
+        self._show_activity_details()
         self.activity_details.set_activity(activity)
         self.map_widget.setVisible(True)
         self.map_widget.display_single_activity(activity)
@@ -704,24 +857,24 @@ class MainWindow(QMainWindow):
         """Show cached elevation profile or fetch from Strava if not yet cached."""
         if not activity.start_latlng:
             self.elevation_chart.clear()
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
             return
 
         # Use cached profile if available (GPX always has one; Strava after first view)
         if activity.elevation_profile:
             dist_km, elev_m = activity.elevation_profile
             self.elevation_chart.set_data(dist_km, elev_m, activity.name)
-            self.elevation_chart.setVisible(True)
+            self._show_elevation_panel(True)
             return
 
         if activity.id < 0:
             # GPX activity with no elevation data in the file
             self.elevation_chart.clear()
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
             return
 
         # Strava activity — fetch altitude + distance streams for the first time
-        self.elevation_chart.setVisible(True)
+        self._show_elevation_panel(True)
         self.elevation_chart.set_loading(True)
         self._elev_worker = ElevationFetchWorker(self.api_client, activity.id)
         self._elev_worker.finished.connect(
@@ -746,7 +899,7 @@ class MainWindow(QMainWindow):
             self.elevation_chart.set_data(distances_km, elevations_m, activity.name)
         else:
             self.elevation_chart.clear()
-            self.elevation_chart.setVisible(False)
+            self._show_elevation_panel(False)
 
     def update_progress(self, message: str):
         """Update progress display."""
@@ -846,7 +999,7 @@ class MainWindow(QMainWindow):
 
         missing = [a for a in activities if not a.elevation_profile and a.id > 0]
         if missing:
-            self.elevation_chart.setVisible(True)
+            self._show_elevation_panel(True)
             self.elevation_chart.set_loading(True)
             self._batch_elev_worker = BatchElevationFetchWorker(self.api_client, activities)
             self._batch_elev_worker.finished.connect(
