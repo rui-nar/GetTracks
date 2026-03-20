@@ -3,6 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +29,7 @@ class TestConfig:
         """Test loading config from existing file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "config.json"
+            fake_user_settings = Path(tmpdir) / "settings.json"  # does not exist
 
             # Create a config file
             test_config = {
@@ -37,7 +39,8 @@ class TestConfig:
             with open(config_file, "w") as f:
                 json.dump(test_config, f)
 
-            config = Config(str(config_file))
+            with patch("src.config.settings._USER_SETTINGS_PATH", fake_user_settings):
+                config = Config(str(config_file))
             assert config.get("strava.client_id") == "test_id"
             assert config.get("app.debug") == True
 
