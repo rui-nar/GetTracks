@@ -69,9 +69,10 @@ def main():
                 print(f"  Removing {d}")
                 shutil.rmtree(d)
 
-    # Run tests first
+    # Run tests first (exclude test_oauth_real.py — requires live browser/network)
     print("Running tests…")
-    run([sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short"], cwd=ROOT)
+    run([sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short",
+         "--ignore=tests/test_oauth_real.py"], cwd=ROOT)
 
     # PyInstaller build
     print("\nBuilding with PyInstaller…")
