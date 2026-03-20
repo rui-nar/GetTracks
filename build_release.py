@@ -45,7 +45,7 @@ def get_version_from_git() -> str:
 def zip_dist(version: str) -> Path:
     folder = DIST / "GetTracks"
     zip_path = DIST / f"GetTracks-{version}-windows-x64.zip"
-    print(f"\nZipping {folder} → {zip_path}")
+    print(f"\nZipping {folder} -> {zip_path}")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for file in folder.rglob("*"):
             if file.is_file():
