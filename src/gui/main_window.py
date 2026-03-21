@@ -36,7 +36,7 @@ from src.gui.polarsteps_settings_dialog import PolarstepsSettingsDialog
 from src.gui.polarsteps_import_dialog import PolarstepsImportDialog
 from src.gui.waypoint_panel import WaypointPanel
 from src.gui.waypoints_section import WaypointsSectionWidget
-from src.gui.workers import StreamFetchWorker, ElevationFetchWorker, BatchElevationFetchWorker
+from src.gui.workers import StreamFetchWorker, ElevationFetchWorker, BatchElevationFetchWorker, ZipExportWorker
 from src.models.waypoint import TripStep
 
 
@@ -516,6 +516,7 @@ class MainWindow(QMainWindow):
         project = self._project_manager.project
         steps = project.waypoints if project else []
         self.waypoints_section.set_waypoints(steps)
+        self.export_options.set_has_waypoints(bool(steps))
 
     def _on_waypoint_selected(self, step: TripStep) -> None:
         """Handle a waypoint selection from map pin or waypoints section."""
@@ -651,6 +652,9 @@ class MainWindow(QMainWindow):
             self._show_elevation_panel(False)
             self.stats_bar.update_stats([])
         self._update_export_button_state()
+        self.export_options.set_has_waypoints(
+            bool(project and project.waypoints)
+        )
 
     def _on_dirty_changed(self, dirty: bool) -> None:
         self._update_title()
@@ -1076,25 +1080,67 @@ class MainWindow(QMainWindow):
         self._enter_preview_mode(tracks)
 
     def _save_tracks(self, tracks: List[Track]) -> None:
-        """Open file dialog and write tracks to GPX."""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export GPX", "", "GPX Files (*.gpx)"
-        )
+        """Open file dialog and write tracks (+ optional waypoints) to GPX or zip."""
+        opts = self.export_options.current_options()
+        project = self._project_manager.project
+        waypoints = (project.waypoints if project and opts.include_waypoints else [])
+        want_zip = bool(waypoints and opts.waypoint_photos == "local")
+
+        if want_zip:
+            file_filter = "Zip Archives (*.zip)"
+            default_ext = ".zip"
+        else:
+            file_filter = "GPX Files (*.gpx)"
+            default_ext = ".gpx"
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export GPX", "", file_filter)
         if not path:
             self.update_status("Export cancelled", "info")
             return
+        if not path.endswith(default_ext):
+            path += default_ext
 
-        if not path.endswith(".gpx"):
-            path += ".gpx"
-
-        gpx = GPXProcessor.merge(tracks, self.export_options.current_options())
+        gpx = GPXProcessor.merge(tracks, opts)
+        if waypoints:
+            GPXProcessor.add_waypoints(gpx, waypoints, opts.waypoint_photos)
         warnings = GPXProcessor.validate(gpx)
-        GPXProcessor.save(gpx, path)
 
-        skipped = 0
-        msg = f"Exported {len(tracks)} track(s) to {os.path.basename(path)}"
-        if skipped:
-            msg += f" ({skipped} indoor/no-GPS activit{'y' if skipped == 1 else 'ies'} skipped)"
+        if want_zip:
+            self._start_zip_export(gpx.to_xml(), waypoints, path, warnings)
+        else:
+            GPXProcessor.save(gpx, path)
+            n_wpt = len(waypoints)
+            msg = f"Exported {len(tracks)} track(s)"
+            if n_wpt:
+                msg += f" + {n_wpt} waypoint(s)"
+            msg += f" to {os.path.basename(path)}"
+            if warnings:
+                msg += f" — {len(warnings)} warning(s)"
+            self.update_status(msg, "success")
+            self.show_toast(msg, "success")
+
+    def _start_zip_export(self, gpx_xml: str, waypoints, zip_path: str, warnings) -> None:
+        """Launch ZipExportWorker to download photos and write the zip."""
+        headers = self.map_widget._request_headers
+        self._zip_worker = ZipExportWorker(gpx_xml, waypoints, zip_path, headers)
+        self._zip_worker.progress.connect(self.update_status)
+        self._zip_worker.finished.connect(
+            lambda path: self._on_zip_export_done(path, warnings)
+        )
+        self._zip_worker.error.connect(
+            lambda err: self.show_toast(f"Export failed: {err}", "error")
+        )
+        n_photos = sum(len(s.photos) for s in waypoints)
+        self.update_status(
+            f"Downloading {n_photos} photo(s) for zip export…", "info"
+        )
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self._zip_worker.start()
+
+    def _on_zip_export_done(self, path: str, warnings) -> None:
+        self.progress_bar.setVisible(False)
+        msg = f"Exported to {os.path.basename(path)}"
         if warnings:
             msg += f" — {len(warnings)} warning(s)"
         self.update_status(msg, "success")

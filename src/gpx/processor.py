@@ -2,12 +2,15 @@
 
 from dataclasses import dataclass
 from datetime import timezone
-from typing import Dict, List
+from typing import Dict, List, TYPE_CHECKING
 
 import gpxpy
 import gpxpy.gpx
 
 from src.models.track import Track
+
+if TYPE_CHECKING:
+    from src.models.waypoint import TripStep
 
 
 @dataclass
@@ -20,11 +23,16 @@ class ExportOptions:
             activity becomes its own GPX track so names are preserved.
         include_time: Include per-point timestamps in the output.
         include_elevation: Include per-point elevation in the output.
+        include_waypoints: Append Polarsteps waypoints as <wpt> elements.
+        waypoint_photos: How to reference photos — "cdn" (public CDN URL) or
+            "local" (relative path inside a zip archive, e.g. photos/step-1-0.jpg).
     """
 
     concatenate: bool = False
     include_time: bool = True
     include_elevation: bool = True
+    include_waypoints: bool = True
+    waypoint_photos: str = "cdn"  # "cdn" | "local"
 
 
 class GPXProcessor:
@@ -146,6 +154,44 @@ class GPXProcessor:
                 gpx.tracks.append(gpx_track)
 
         return gpx
+
+    @staticmethod
+    def add_waypoints(
+        gpx: gpxpy.gpx.GPX,
+        steps: "List[TripStep]",
+        photo_mode: str,
+    ) -> None:
+        """Append Polarsteps TripSteps as GPX <wpt> elements.
+
+        Args:
+            gpx: The GPX document to modify in-place.
+            steps: Polarsteps trip steps to add.
+            photo_mode: "cdn" — link to the public CDN thumbnail URL;
+                        "local" — relative path inside the zip archive
+                        (photos/step-{id}-{i}.jpg).
+        """
+        for step in steps:
+            time = step.date
+            if time.tzinfo is None:
+                time = time.replace(tzinfo=timezone.utc)
+            wpt = gpxpy.gpx.GPXWaypoint(
+                latitude=step.lat,
+                longitude=step.lon,
+                name=step.name,
+                description=step.description,
+                time=time,
+            )
+            for i, photo in enumerate(step.photos):
+                if photo_mode == "local":
+                    href = f"photos/step-{step.id}-{i}.jpg"
+                else:
+                    href = photo.large_thumb_url or photo.thumb_url or photo.url
+                if href:
+                    link = gpxpy.gpx.GPXLink(href)
+                    link.text = photo.caption or step.name
+                    link.type = "image/jpeg"
+                    wpt.links.append(link)
+            gpx.waypoints.append(wpt)
 
     @staticmethod
     def save(gpx: gpxpy.gpx.GPX, path: str) -> None:

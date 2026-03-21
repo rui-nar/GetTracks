@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import io
+import ssl
+import urllib.request
 import webbrowser
+import zipfile
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -321,3 +325,74 @@ class FetchPolarstepsStepsWorker(QThread):
                 self.error.emit(f"Failed fetching trip {trip_name}: {e}")
                 return
         self.finished.emit(all_steps)
+
+
+class ZipExportWorker(QThread):
+    """Download waypoint photos and write a GPX + photos zip archive.
+
+    The GPX is stored as ``<basename>.gpx`` and each photo as
+    ``photos/step-{id}-{i}.jpg`` inside the zip.
+    """
+
+    finished = pyqtSignal(str)   # path to the written zip file
+    error    = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(
+        self,
+        gpx_xml: str,
+        steps: List[TripStep],
+        zip_path: str,
+        headers: dict,
+    ) -> None:
+        super().__init__()
+        self._gpx_xml = gpx_xml
+        self._steps = steps
+        self._zip_path = zip_path
+        self._headers = headers
+
+    def run(self) -> None:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        # Count total photos for progress reporting
+        total_photos = sum(len(s.photos) for s in self._steps)
+        done = 0
+
+        try:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                import os
+                gpx_name = os.path.basename(self._zip_path)
+                if gpx_name.lower().endswith(".zip"):
+                    gpx_name = gpx_name[:-4] + ".gpx"
+                zf.writestr(gpx_name, self._gpx_xml.encode("utf-8"))
+
+                for step in self._steps:
+                    for i, photo in enumerate(step.photos):
+                        cdn_url = photo.large_thumb_url or photo.thumb_url or photo.url
+                        arc_path = f"photos/step-{step.id}-{i}.jpg"
+                        done += 1
+                        self.progress.emit(
+                            f"Downloading photo {done}/{total_photos}: {step.name}"
+                        )
+                        if not cdn_url:
+                            continue
+                        try:
+                            req = urllib.request.Request(
+                                cdn_url, headers=self._headers
+                            )
+                            with urllib.request.urlopen(
+                                req, timeout=15, context=ctx
+                            ) as resp:
+                                zf.writestr(arc_path, resp.read())
+                        except Exception:
+                            pass  # skip failed photo; link in GPX still present
+
+            with open(self._zip_path, "wb") as f:
+                f.write(buf.getvalue())
+
+            self.finished.emit(self._zip_path)
+        except Exception as exc:
+            self.error.emit(str(exc))
