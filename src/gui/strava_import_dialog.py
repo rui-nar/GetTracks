@@ -233,18 +233,30 @@ class StravaImportDialog(QDialog):
         self._update_fetch_button_label()
 
     def _refresh_auth_status(self) -> None:
-        if self._api_client.token_data:
-            athlete = self._api_client.token_data.get("athlete", {})
-            if athlete:
-                name = (athlete.get("firstname", "") + " " + athlete.get("lastname", "")).strip()
+        import time as _time
+        token = self._api_client.token_data
+        if token:
+            expires_at = token.get("expires_at", 0)
+            token_expired = expires_at < _time.time()
+            athlete = token.get("athlete") or {}
+            name = (athlete.get("firstname", "") + " " + athlete.get("lastname", "")).strip()
+            if token_expired:
+                self._auth_status.setText("⚠ Session expired — reconnect")
+                self._auth_status.setStyleSheet("color: #b36200; font-weight: bold")
+                self._auth_btn.setText("Reconnect to Strava")
+                self._auth_btn.setEnabled(True)
+                self._fetch_btn.setEnabled(False)
             else:
-                name = ""
-            self._auth_status.setText(f"● Connected{' as ' + name if name else ''}")
-            self._auth_status.setStyleSheet("color: #2e7d32; font-weight: bold")
-            self._fetch_btn.setEnabled(True)
+                self._auth_status.setText(f"● Connected as {name}" if name else "● Connected")
+                self._auth_status.setStyleSheet("color: #2e7d32; font-weight: bold")
+                self._auth_btn.setText("Reconnect to Strava")
+                self._auth_btn.setEnabled(False)
+                self._fetch_btn.setEnabled(True)
         else:
             self._auth_status.setText("○ Not connected")
             self._auth_status.setStyleSheet("color: #666")
+            self._auth_btn.setText("Connect to Strava")
+            self._auth_btn.setEnabled(True)
             self._fetch_btn.setEnabled(False)
 
     def _update_fetch_button_label(self) -> None:
@@ -398,19 +410,28 @@ class StravaImportDialog(QDialog):
         self._update_fetch_button_label()
 
     def _on_fetch_error(self, msg: str) -> None:
-        self._fetch_btn.setEnabled(True)
         self._progress.setVisible(False)
-        # Show a concise, actionable message for auth failures
-        if "invalid or expired" in msg or "re-authenticate" in msg.lower() or "401" in msg:
+        msg_lower = msg.lower()
+        is_auth = (
+            "invalid or expired" in msg_lower
+            or "re-authenticate" in msg_lower
+            or "401" in msg
+            or "refresh" in msg_lower
+            or "network" in msg_lower
+            or "connection" in msg_lower
+        )
+        if is_auth:
             self._fetch_status.setText(
-                "Token expired — click \"Connect to Strava\" to reconnect"
+                "Connection issue — click \"Reconnect to Strava\" to try again"
             )
+            self._auth_status.setText("⚠ Session expired — reconnect")
+            self._auth_status.setStyleSheet("color: #b36200; font-weight: bold")
+            self._auth_btn.setText("Reconnect to Strava")
             self._auth_btn.setEnabled(True)
-            self._auth_status.setText("○ Not connected")
-            self._auth_status.setStyleSheet("color: #666")
             self._fetch_btn.setEnabled(False)
         else:
             self._fetch_status.setText(f"Error: {msg}")
+            self._fetch_btn.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Import

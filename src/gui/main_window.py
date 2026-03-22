@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QLabel, QPushButton, QProgressBar,
     QMessageBox, QTextEdit, QSplitter, QFrame, QFileDialog, QInputDialog, QDialog,
-    QStackedWidget,
+    QStackedWidget, QProgressDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QAction, QFont, QIcon, QPixmap, QColor, QPainter
@@ -25,7 +25,7 @@ from src.utils.logging import setup_logging
 from src.gui.splash import make_splash
 from src.gui.strava_import_dialog import StravaImportDialog
 from src.gui.gpx_import import import_gpx_file
-from src.gui.export_options_widget import ExportOptionsWidget
+from src.gui.export_dialog import ExportDialog
 from src.gui.stats_bar import StatsBarWidget
 from src.gui.elevation_chart import ElevationChart
 from src.gui.toast import ToastManager
@@ -147,6 +147,8 @@ class MainWindow(QMainWindow):
         self.api_client = StravaAPI(config)
         self.logger = setup_logging(__name__)
         self._pending_tracks: Optional[List[Track]] = None  # set during export preview
+        self._has_export_waypoints: bool = False
+        self._animation_dialog = None   # AnimationDialog instance (at most one)
         self._project_manager = ProjectManager(self)
 
         self.setup_ui()
@@ -205,10 +207,6 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.export_button)
 
         left_layout.addLayout(button_layout)
-
-        # Export options
-        self.export_options = ExportOptionsWidget()
-        left_layout.addWidget(self.export_options)
 
         # Progress bar
         self.progress_bar = QProgressBar()
@@ -340,6 +338,17 @@ class MainWindow(QMainWindow):
         act_appearance = QAction("Appearance…", self)
         act_appearance.triggered.connect(self._open_appearance)
         settings_menu.addAction(act_appearance)
+        act_anim_speeds = QAction("Animation Speeds…", self)
+        act_anim_speeds.triggered.connect(self._open_animation_speeds)
+        settings_menu.addAction(act_anim_speeds)
+
+        # Tools menu
+        tools_menu = mb.addMenu("&Tools")
+        self._act_animate = QAction("Animate Trip…", self)
+        self._act_animate.setShortcut("Ctrl+Shift+A")
+        self._act_animate.setEnabled(False)
+        self._act_animate.triggered.connect(self._open_animation_dialog)
+        tools_menu.addAction(self._act_animate)
 
         # Add track menu
         import_menu = mb.addMenu("&Add track")
@@ -468,6 +477,11 @@ class MainWindow(QMainWindow):
         dlg = AppearanceDialog(self.map_widget, self.config, self)
         dlg.exec()
 
+    def _open_animation_speeds(self) -> None:
+        from src.gui.animation_settings_dialog import AnimationSettingsDialog
+        dlg = AnimationSettingsDialog(self.config, self)
+        dlg.exec()
+
     def _apply_polarsteps_auth(self) -> None:
         """Build request headers from stored Polarsteps token and push to photo loaders."""
         token = self.config.get("polarsteps.remember_token", "")
@@ -516,7 +530,7 @@ class MainWindow(QMainWindow):
         project = self._project_manager.project
         steps = project.waypoints if project else []
         self.waypoints_section.set_waypoints(steps)
-        self.export_options.set_has_waypoints(bool(steps))
+        self._has_export_waypoints = bool(steps)
 
     def _on_waypoint_selected(self, step: TripStep) -> None:
         """Handle a waypoint selection from map pin or waypoints section."""
@@ -632,6 +646,12 @@ class MainWindow(QMainWindow):
 
     def _on_project_changed(self, project: Optional[Project]) -> None:
         """Called when a project is opened, created, or closed."""
+        if self._animation_dialog is not None:
+            try:
+                self._animation_dialog.close()
+            except RuntimeError:
+                pass
+            self._animation_dialog = None
         self._exit_preview_mode()
         self._update_title()
         self.project_list.set_project(project)
@@ -652,9 +672,7 @@ class MainWindow(QMainWindow):
             self._show_elevation_panel(False)
             self.stats_bar.update_stats([])
         self._update_export_button_state()
-        self.export_options.set_has_waypoints(
-            bool(project and project.waypoints)
-        )
+        self._has_export_waypoints = bool(project and project.waypoints)
 
     def _on_dirty_changed(self, dirty: bool) -> None:
         self._update_title()
@@ -965,8 +983,20 @@ class MainWindow(QMainWindow):
         self.logger.error(f"Fetch error: {error_msg}")
         self.progress_bar.setVisible(False)
         self.update_status("Error fetching activities", "error")
+        self._show_fetch_error(error_msg)
 
-        self.show_toast(f"Stream fetch error: {error_msg}", "error", duration_ms=6000)
+    def _show_fetch_error(self, msg: str) -> None:
+        """Show a persistent error for fetch failures; use a dialog for auth errors."""
+        auth_keywords = ("token", "authenticate", "authoriz", "unauthoriz", "401")
+        if any(kw in msg.lower() for kw in auth_keywords):
+            QMessageBox.warning(
+                self,
+                "Authentication required",
+                f"Could not fetch GPS tracks:\n\n{msg}\n\n"
+                "Please re-authenticate via Settings → Strava.",
+            )
+        else:
+            self.show_toast(f"Fetch error: {msg}", "error", duration_ms=8000)
 
     def _update_export_button_state(self):
         """Enable/label export button based on project state."""
@@ -979,6 +1009,81 @@ class MainWindow(QMainWindow):
         else:
             self.export_button.setText("Preview & Export")
             self.export_button.setEnabled(has_items)
+        self._act_animate.setEnabled(has_items)
+
+    def _open_animation_dialog(self) -> None:
+        """Open (or raise) the animation dialog, auto-fetching tracks first."""
+        if self._animation_dialog is not None:
+            try:
+                self._animation_dialog.raise_()
+                self._animation_dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._animation_dialog = None
+
+        project = self._project_manager.project
+        if not project:
+            return
+
+        # If we already have full-res tracks from a preview, use them directly.
+        if self._pending_tracks is not None:
+            track_map = {t.activity_id: t for t in self._pending_tracks}
+            self._launch_animation_dialog(track_map)
+            return
+
+        # Otherwise fetch GPS tracks for all activities in the project.
+        activities = [
+            a for a in project.activities
+            if any(item.activity_id == a.id for item in project.items
+                   if item.item_type == "activity")
+        ]
+        if not activities:
+            self._launch_animation_dialog({})
+            return
+
+        n = len(activities)
+        self._anim_progress_dlg = QProgressDialog(
+            f"Loading GPS tracks for {n} activit{'y' if n == 1 else 'ies'}…",
+            "Cancel",
+            0, 0,
+            self,
+        )
+        self._anim_progress_dlg.setWindowTitle("Preparing Animation")
+        self._anim_progress_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        self._anim_progress_dlg.setMinimumWidth(380)
+        self._anim_progress_dlg.setAutoClose(False)
+        self._anim_progress_dlg.setAutoReset(False)
+
+        from src.gui.workers import StreamFetchWorker
+        self._anim_fetch_worker = StreamFetchWorker(self.api_client, activities)
+        self._anim_fetch_worker.progress.connect(self._anim_progress_dlg.setLabelText)
+        self._anim_fetch_worker.finished.connect(self._on_anim_tracks_fetched)
+        self._anim_fetch_worker.error.connect(self._on_anim_fetch_error)
+        self._anim_progress_dlg.canceled.connect(self._anim_fetch_worker.terminate)
+        self._anim_fetch_worker.start()
+        self._anim_progress_dlg.show()
+
+    def _on_anim_tracks_fetched(self, tracks: list) -> None:
+        self._anim_progress_dlg.close()
+        track_map = {t.activity_id: t for t in tracks}
+        self._launch_animation_dialog(track_map)
+
+    def _on_anim_fetch_error(self, msg: str) -> None:
+        self._anim_progress_dlg.close()
+        self._show_fetch_error(msg)
+        # Open dialog anyway with whatever we have (great-circle fallback)
+        self._launch_animation_dialog({})
+
+    def _launch_animation_dialog(self, track_map: dict) -> None:
+        project = self._project_manager.project
+        if not project:
+            return
+        from src.animation.animation_dialog import AnimationDialog
+        dlg = AnimationDialog(project, track_map, self.config, parent=self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.destroyed.connect(lambda: setattr(self, "_animation_dialog", None))
+        self._animation_dialog = dlg
+        dlg.show()
 
     def _on_view_project(self) -> None:
         """Instantly show full project on map using stored summary polylines."""
@@ -1080,25 +1185,21 @@ class MainWindow(QMainWindow):
         self._enter_preview_mode(tracks)
 
     def _save_tracks(self, tracks: List[Track]) -> None:
-        """Open file dialog and write tracks (+ optional waypoints) to GPX or zip."""
-        opts = self.export_options.current_options()
-        project = self._project_manager.project
-        waypoints = (project.waypoints if project and opts.include_waypoints else [])
-        want_zip = bool(waypoints and opts.waypoint_photos == "local")
+        """Open export dialog, collect options + path, then write GPX or zip."""
+        dlg = ExportDialog(has_waypoints=self._has_export_waypoints, parent=self)
+        if dlg.exec() != ExportDialog.DialogCode.Accepted:
+            self.update_status("Export cancelled", "info")
+            return
 
-        if want_zip:
-            file_filter = "Zip Archives (*.zip)"
-            default_ext = ".zip"
-        else:
-            file_filter = "GPX Files (*.gpx)"
-            default_ext = ".gpx"
-
-        path, _ = QFileDialog.getSaveFileName(self, "Export GPX", "", file_filter)
+        opts = dlg.current_options()
+        path = dlg.selected_path()
         if not path:
             self.update_status("Export cancelled", "info")
             return
-        if not path.endswith(default_ext):
-            path += default_ext
+
+        project = self._project_manager.project
+        waypoints = (project.waypoints if project and opts.include_waypoints else [])
+        want_zip = bool(waypoints and opts.waypoint_photos == "local")
 
         gpx = GPXProcessor.merge(tracks, opts)
         if waypoints:

@@ -73,21 +73,32 @@ class StravaAPI:
         self._rate_limiter = RateLimiter()
 
     def _ensure_token(self) -> None:
-        """Ensure access token is valid, refresh if needed."""
+        """Ensure access token is valid, refreshing if expired."""
         if not self.token_data:
             raise AuthenticationError("No token data available. Please authenticate with Strava.")
 
-        # simple expiration check
         if self.token_data.get("expires_at", 0) < time.time():
             try:
+                old_athlete = self.token_data.get("athlete")
                 self.token_data = self.oauth.refresh_token(self.token_data.get("refresh_token"))
+                # Strava's refresh response omits athlete — carry it forward.
+                if old_athlete and "athlete" not in self.token_data:
+                    self.token_data["athlete"] = old_athlete
                 TokenStore.save_token(self.user_id, self.token_data)
-            except TokenError as e:
-                # Token refresh failed - clear the invalid token
+            except AuthenticationError:
+                # Strava explicitly rejected the refresh token (401) — it is
+                # invalid or revoked.  Safe to discard and force re-auth.
                 self.clear_token()
                 raise AuthenticationError(
-                    "Token refresh failed. Please re-authenticate with Strava. "
-                    f"Error: {str(e)}"
+                    "Strava session expired. Please re-authenticate via "
+                    "Add track → From Strava…"
+                )
+            except TokenError as e:
+                # Network or transient server error.  Keep the refresh token
+                # so the next attempt can try again without forcing full re-auth.
+                raise AuthenticationError(
+                    f"Could not refresh Strava token (network issue?): {e}\n"
+                    "Please check your connection and try again."
                 )
 
     def clear_token(self) -> None:
@@ -127,21 +138,36 @@ class StravaAPI:
 
             if resp.status_code == 401:
                 if not _refreshed:
-                    # Token may have been revoked or expired early — try refresh once
+                    # Token may have expired mid-session — try refresh once
                     _refreshed = True
                     try:
+                        old_athlete = self.token_data.get("athlete")
                         self.token_data = self.oauth.refresh_token(
                             self.token_data.get("refresh_token")
                         )
+                        if old_athlete and "athlete" not in self.token_data:
+                            self.token_data["athlete"] = old_athlete
                         TokenStore.save_token(self.user_id, self.token_data)
                         headers = {"Authorization": f"Bearer {self.token_data['access_token']}"}
                         continue   # retry with new token
+                    except AuthenticationError:
+                        # Strava says the refresh token itself is invalid → clear it
+                        self.clear_token()
+                        raise AuthenticationError(
+                            "Strava session expired. Please re-authenticate via "
+                            "Add track → From Strava…"
+                        )
                     except Exception:
-                        pass
-                self.clear_token()
+                        # Network/transient error during refresh — keep the token
+                        raise AuthenticationError(
+                            "Could not refresh Strava token. "
+                            "Please check your connection and try again."
+                        )
+                # 401 even after a successful refresh → token was just replaced,
+                # something else is wrong (scope issue, etc.) — don't clear
                 raise AuthenticationError(
-                    "Strava access token is invalid or expired. "
-                    "Please re-authenticate via Add track → From Strava…"
+                    "Strava access denied (401). Please re-authenticate via "
+                    "Add track → From Strava…"
                 )
 
             if resp.status_code == 429:

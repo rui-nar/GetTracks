@@ -60,9 +60,22 @@ def test_refresh_token_success(mock_post):
 
 
 @patch("src.auth.oauth.requests.post")
-def test_refresh_token_failure(mock_post):
+def test_refresh_token_invalid(mock_post):
+    """A 401 from Strava means the refresh token is revoked — raises AuthenticationError."""
     mock_post.return_value.status_code = 401
     mock_post.return_value.text = "fail"
+
+    config = DummyConfig()
+    oauth = OAuth2Session(config)
+    with pytest.raises(AuthenticationError):
+        oauth.refresh_token("bad")
+
+
+@patch("src.auth.oauth.requests.post")
+def test_refresh_token_server_error(mock_post):
+    """A non-401 error (e.g., 500) raises TokenError — token should NOT be discarded."""
+    mock_post.return_value.status_code = 500
+    mock_post.return_value.text = "server error"
 
     config = DummyConfig()
     oauth = OAuth2Session(config)

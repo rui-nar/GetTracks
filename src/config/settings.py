@@ -84,7 +84,7 @@ class Config:
         try:
             with open(_USER_SETTINGS_PATH, "r") as f:
                 user = json.load(f)
-            for block in ("strava", "polarsteps", "appearance"):
+            for block in ("strava", "polarsteps", "appearance", "animation"):
                 if block in user and isinstance(user[block], dict):
                     if block not in self._config:
                         self._config[block] = {}
@@ -190,6 +190,39 @@ class Config:
             config = config[k]
 
         config[keys[-1]] = value
+
+    # Default visual pacing speeds for connecting-segment animation (km/h).
+    # Lower than real-world speeds so segments look comparable to GPS activities.
+    _ANIM_SPEED_DEFAULTS: Dict[str, float] = {
+        "flight": 250.0,
+        "train":   40.0,
+        "boat":    15.0,
+        "bus":     35.0,
+    }
+
+    def get_animation_speeds(self) -> Dict[str, float]:
+        """Return connecting-segment visual pacing speeds (km/h), with defaults."""
+        stored = self.get("animation.segment_speeds", {}) or {}
+        return {
+            key: float(stored.get(key, default))
+            for key, default in self._ANIM_SPEED_DEFAULTS.items()
+        }
+
+    def save_animation_speeds(self, speeds: Dict[str, float]) -> None:
+        """Persist connecting-segment speeds to ~/.config/GetTracks/settings.json."""
+        self.set("animation.segment_speeds", {k: float(v) for k, v in speeds.items()})
+        _USER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing: Dict[str, Any] = {}
+        if _USER_SETTINGS_PATH.exists():
+            try:
+                with open(_USER_SETTINGS_PATH, "r") as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        anim = existing.setdefault("animation", {})
+        anim["segment_speeds"] = {k: float(v) for k, v in speeds.items()}
+        with open(_USER_SETTINGS_PATH, "w") as f:
+            json.dump(existing, f, indent=2)
 
     def validate_strava_config(self) -> bool:
         """

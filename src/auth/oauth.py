@@ -57,7 +57,19 @@ class OAuth2Session:
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         }
-        resp = requests.post(self.TOKEN_URL, data=data)
+        try:
+            resp = requests.post(self.TOKEN_URL, data=data, timeout=15)
+        except requests.RequestException as exc:
+            # Network-level failure — the refresh token may still be valid.
+            # Raise TokenError so callers know NOT to discard it.
+            raise TokenError(f"Network error during token refresh: {exc}") from exc
+
+        if resp.status_code == 401:
+            # Strava explicitly rejected the token — it is invalid or revoked.
+            # Raise AuthenticationError so callers know to discard it.
+            raise AuthenticationError(
+                f"Refresh token rejected by Strava (401): {resp.text}"
+            )
         if resp.status_code != 200:
-            raise TokenError(f"Failed to refresh token: {resp.text}")
+            raise TokenError(f"Failed to refresh token ({resp.status_code}): {resp.text}")
         return resp.json()

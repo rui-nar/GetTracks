@@ -17,6 +17,8 @@ a = Analysis(
         (str(ROOT / "assets"), "assets"),
         # Config template — user must fill in credentials
         (str(ROOT / "config" / "config.json"), "config"),
+        # ffmpeg binary bundled via imageio-ffmpeg
+        (str(ROOT / ".venv" / "Lib" / "site-packages" / "imageio_ffmpeg" / "binaries"), "imageio_ffmpeg/binaries"),
     ],
     hiddenimports=[
         # All src sub-packages (PyInstaller needs explicit help with src.* layout)
@@ -33,6 +35,7 @@ a = Analysis(
         "src.polarsteps_api",
         "src.polarsteps_api.models",
         "src.project",
+        "src.animation",
         "src.utils",
         "src.visualization",
         # Pydantic (Polarsteps API models)
@@ -51,6 +54,10 @@ a = Analysis(
         "lxml",
         # Polyline codec
         "polyline",
+        # Animation / video export
+        "imageio",
+        "imageio_ffmpeg",
+        "numpy",
     ],
     hookspath=[],
     hooksconfig={},
